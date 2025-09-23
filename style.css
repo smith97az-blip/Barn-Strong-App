@@ -57,3 +57,13 @@ textarea{min-height:60px;resize:vertical}
   color:#FDEDD0; /* matches --ink */
   font-size:12px;
 }
+
+/* v2.4 charts & modal */
+.chart-card canvas { width: 100%; max-width: 800px; height: 260px; }
+.modal {
+  position: fixed; inset: 0; display:none; align-items:center; justify-content:center;
+  background: rgba(0,0,0,.6); z-index: 60;
+}
+.modal.open { display:flex; }
+.modal .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; max-width: 680px; width: 92%; }
+

@@ -28,44 +28,49 @@
       }
     </script>
   </head>
-  <body>
-    <header class="topbar">
-      <button id="hamburger" class="icon-btn" aria-label="Menu">☰</button>
-      <h1>Barn Strong</h1>
-      <button id="installBtn" class="btn ghost" hidden>Install</button>
-    </header>
-<div id="netBanner" class="net-banner" hidden></div>
-    
-    <!-- Drawer -->
-    <aside id="drawer" class="drawer" aria-hidden="true">
-      <div class="drawer-head">
-        <img src="assets/mascot.svg" alt="Barn Strong" class="avatar-img"/>
-        <div>
-          <div id="drawerName" class="bold">Guest</div>
-          <div id="drawerGoal" class="muted small">Goal: —</div>
-        </div>
+ <body>
+  <header class="topbar">
+    <button id="hamburger" class="icon-btn" aria-label="Menu">☰</button>
+    <h1>Barn Strong</h1>
+    <button id="installBtn" class="btn ghost" hidden>Install</button>
+  </header>
+
+  <div id="netBanner" class="net-banner" hidden></div>
+  
+  <!-- Drawer -->
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <img src="assets/mascot-barn-angry.png?v=v2.4.3" alt="Barn Strong" class="avatar-img"/>
+      <div>
+        <div id="drawerName" class="bold">Guest</div>
+        <div id="drawerGoal" class="muted small">Goal: —</div>
       </div>
-      <nav class="drawer-nav">
-        <a href="#/dashboard" class="navlink">Dashboard</a>
-        <a href="#/calendar" class="navlink">Calendar</a>
-        <a href="#/today" class="navlink">Today's Session</a>
-        <a href="#/unscheduled" class="navlink">Unscheduled Session</a>
-        <a href="#/variations" class="navlink">Variation Record</a>
-        <a href="#/program" class="navlink">Program View</a>
-        <a href="#/exercises" class="navlink">Exercise Library</a>
-        <a href="#/coach" class="navlink">Coach Portal</a>
-        <a href="#/unscheduled" class="navlink">Unscheduled Session</a>
-        <div class="divider"></div>
-        <a href="#/settings" class="navlink">Settings</a>
-        <button id="logoutBtn" class="btn danger wfull mt">Log out</button>
-      </nav>
-    </aside>
-    <div id="scrim" class="scrim" hidden></div>
+    </div>
+    <nav class="drawer-nav">
+      <a href="#/dashboard" class="navlink">Dashboard</a>
+      <a href="#/calendar" class="navlink">Calendar</a>
+      <a href="#/today" class="navlink">Today's Session</a>
+      <a href="#/unscheduled" class="navlink">Unscheduled Session</a>
+      <a href="#/variations" class="navlink">Variation Record</a>
+      <a href="#/program" class="navlink">Program View</a>
+      <a href="#/exercises" class="navlink">Exercise Library</a>
+      <a href="#/coach" class="navlink">Coach Portal</a>
+      <div class="divider"></div>
+      <a href="#/settings" class="navlink">Settings</a>
+      <button id="logoutBtn" class="btn danger wfull mt">Log out</button>
+    </nav>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
 
-    <main id="root" class="container"></main>
+  <!-- Splash (loading) -->
+  <div id="splash" class="splash">
+    <img src="assets/mascot-barn-angry.png?v=v2.4.3" alt="Barn Strong Mascot" class="mascot">
+  </div>
 
-    <footer class="foot">
-      <small>&copy; 2025 Barn Strong. PWA v2.2 (optimized).</small>
-    </footer>
-  </body>
+  <main id="root" class="container"></main>
+
+  <footer class="foot">
+    <small>&copy; 2025 Barn Strong. PWA v2.2 (optimized).</small>
+  </footer>
+</body>
 </html>

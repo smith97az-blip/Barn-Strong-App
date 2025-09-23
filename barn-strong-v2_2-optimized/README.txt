@@ -3,7 +3,7 @@ Barn Strong v2.2 (optimized base)
 - Red/Gold theme + mascot (SVG, zero deps)
 - PWA (service worker + manifest) and SPA redirects
 - Firebase Auth/Firestore optional; runs in local demo without config
-- Exercise Library seeded with initial 13 (v2.3 will replace with full list)
+- Exercise Library seeded with initial 13 (v2.3 will replace with full li st)
 
 Deploy (no CLI):
 1) Unzip and drag this folder to Netlify (manual deploy).

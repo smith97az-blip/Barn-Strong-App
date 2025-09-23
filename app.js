@@ -654,10 +654,15 @@ function CoachPortal(){
         </div>
       </div>
     `;
-    if(window.flatpickr){ flatpickr(card.querySelector('.pick'), { dateFormat:'Y-m-d', onChange:(sel)=> s.date = sel[0]?.toISOString().slice(0,10) }); }
+    if(window.flatpickr){
+      flatpickr(card.querySelector('.pick'), {
+        dateFormat:'Y-m-d',
+        onChange:(sel)=> s.date = sel[0]?.toISOString().slice(0,10)
+      });
+    }
 
     const exlist = card.querySelector('.exlist');
-    (s.blocks||[]).forEach((b, i)=>{
+    (s.blocks||[]).forEach(b=>{
       const row = document.createElement('div'); row.className='item';
       row.innerHTML = `<div class="grow">${b.name} — ${b.sets||1} x ${b.reps||''}${b.weight? ' @ '+b.weight+' lb':''}</div>`;
       exlist.appendChild(row);
@@ -689,10 +694,15 @@ function CoachPortal(){
     sessions.forEach((_, i)=> sessionsWrap.appendChild(renderSessionCard(i)));
   }
 
-  root.querySelector('#addSession').addEventListener('click', ()=>{ sessions.push({ date:'', title:'', blocks:[] }); render(); });
-  root.querySelector('#dupWeek').addEventListener('click', ()=>{ const copies = sessions.map(s=> JSON.parse(JSON.stringify(s))); sessions.push(...copies); render(); });
+  root.querySelector('#addSession').addEventListener('click', ()=>{
+    sessions.push({ date:'', title:'', blocks:[] }); render();
+  });
+  root.querySelector('#dupWeek').addEventListener('click', ()=>{
+    const copies = sessions.map(s=> JSON.parse(JSON.stringify(s)));
+    sessions.push(...copies); render();
+  });
 
-  // Template builder (multi-week) — simple wizard
+  // Template builder (multi-week)
   root.querySelector('#addTemplate').addEventListener('click', ()=>{
     openModal(`
       <h3>Template Builder</h3>
@@ -723,18 +733,16 @@ function CoachPortal(){
     codeSel.innerHTML = ``; userSel.innerHTML = `<option value="">— select user —</option>`;
 
     if(db && state.user){
-      // Trainer codes from `trainers` collection (doc id = code)
       const codes = await db.collection('trainers').get();
-      codes.forEach(d=> {
+      codes.forEach(d=>{
         const opt = document.createElement('option');
         opt.value = d.id; opt.textContent = d.id;
         codeSel.appendChild(opt);
       });
-      if(!codes.size){ // default fallback
+      if(!codes.size){
         const opt = document.createElement('option'); opt.value='BARN'; opt.textContent='BARN'; codeSel.appendChild(opt);
       }
 
-      // Users (limited fields). Requires rules that allow coach to read users list (see rules section).
       const users = await db.collection('users').limit(200).get();
       users.forEach(u=>{
         const d = u.data();
@@ -744,7 +752,6 @@ function CoachPortal(){
         userSel.appendChild(opt);
       });
     }else{
-      // local demo
       const opt = document.createElement('option'); opt.value='local'; opt.textContent='Demo User'; userSel.appendChild(opt);
       const opt2 = document.createElement('option'); opt2.value='BARN'; opt2.textContent='BARN'; codeSel.appendChild(opt2);
     }
@@ -760,11 +767,9 @@ function CoachPortal(){
     if(!db || !state.user) return alert('Login + Firebase required');
 
     try{
-      // 1) Save the week's template under programs/{code}/weeks/{n}
       await db.collection('programs').doc(trainerCode).collection('weeks').doc(String(weekNumber))
         .set({ weekNumber, sessions }, { merge: true });
 
-      // 2) If a user is selected, assign to that user by writing a simple assignment doc
       if(targetUser){
         await db.collection('assignments').doc(targetUser).set({
           trainerCode, weekNumber, startDate: startDate || new Date().toISOString().slice(0,10),
@@ -773,7 +778,8 @@ function CoachPortal(){
       }
 
       alert('Published!');
-      root.querySelector('#out').textContent = `Published week ${weekNumber} (${sessions.length} sessions)${targetUser? ' and assigned to user':''}.`;
+      root.querySelector('#out').textContent =
+        `Published week ${weekNumber} (${sessions.length} sessions)` + (targetUser ? ' and assigned to user.' : '.');
     }catch(e){ alert(e.message); }
   });
 
@@ -781,86 +787,6 @@ function CoachPortal(){
   page('Coach Portal', root);
 }
 
-
-  function renderSessionCard(idx){
-    const s = sessions[idx];
-    const card = document.createElement('div'); card.className='item'; card.dataset.idx = idx;
-    card.innerHTML = `
-      <div class="grow">
-        <div class="grid two">
-          <label>Date <input class="date" value="${s.date||''}" placeholder="YYYY-MM-DD"/></label>
-          <label>Title <input class="title" value="${s.title||''}" placeholder="Upper A"/></label>
-        </div>
-        <div class="divider"></div>
-        <div class="small muted">Exercises</div>
-        <div class="list exlist"></div>
-        <div class="row mt">
-          <input class="exname" placeholder="Exercise name"/>
-          <input class="exsets" type="number" placeholder="Sets"/>
-          <input class="exreps" type="number" placeholder="Reps"/>
-          <input class="exload" type="number" placeholder="Target lb"/>
-          <button class="btn small addEx">Add</button>
-          <button class="btn small ghost dup">Duplicate session</button>
-          <button class="btn small danger del">Delete session</button>
-        </div>
-      </div>
-    `;
-    const exlist = card.querySelector('.exlist');
-    (s.blocks||[]).forEach((b, i)=>{
-      const row = document.createElement('div'); row.className='item';
-      row.innerHTML = `<div class="grow">${b.name} — ${b.sets||1} x ${b.reps||''}${b.weight? ' @ '+b.weight+' lb':''}</div>`;
-      exlist.appendChild(row);
-    });
-
-    card.querySelector('.addEx').addEventListener('click', ()=>{
-      const name = card.querySelector('.exname').value.trim();
-      const sets = parseInt(card.querySelector('.exsets').value||'') || 1;
-      const reps = parseInt(card.querySelector('.exreps').value||'') || null;
-      const weight = parseFloat(card.querySelector('.exload').value||'') || null;
-      if(!sessions[idx].blocks) sessions[idx].blocks = [];
-      sessions[idx].blocks.push({ name, sets, reps, weight });
-      render();
-    });
-    card.querySelector('.dup').addEventListener('click', ()=>{
-      const clone = JSON.parse(JSON.stringify(sessions[idx]));
-      sessions.push(clone); render();
-    });
-    card.querySelector('.del').addEventListener('click', ()=>{
-      sessions.splice(idx,1); render();
-    });
-    card.querySelector('.date').addEventListener('input', e=> sessions[idx].date = e.target.value);
-    card.querySelector('.title').addEventListener('input', e=> sessions[idx].title = e.target.value);
-
-    return card;
-  }
-
-  function render(){
-    sessionsWrap.innerHTML = '';
-    sessions.forEach((_, i)=> sessionsWrap.appendChild(renderSessionCard(i)));
-  }
-
-  root.querySelector('#addSession').addEventListener('click', ()=>{ sessions.push({ date:'', title:'', blocks:[] }); render(); });
-
-  root.querySelector('#dupWeek').addEventListener('click', ()=>{
-    const copies = sessions.map(s=> JSON.parse(JSON.stringify(s)));
-    sessions.push(...copies); render();
-  });
-
-  root.querySelector('#publish').addEventListener('click', async()=>{
-    const tc = (root.querySelector('#tc').value.trim() || 'BARN');
-    const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
-    if(!db || !state.user){ alert('Login + Firebase required'); return }
-    try{
-      await db.collection('programs').doc(tc).collection('weeks').doc(String(weekNumber))
-        .set({ weekNumber, sessions }, { merge: true });
-      logEvent('program_published', { weekNumber, sessionCount: sessions.length });
-      alert('Published!');
-      root.querySelector('#out').textContent = `Published week ${weekNumber} with ${sessions.length} sessions.`;
-    }catch(e){ alert(e.message) }
-  });
-
-  page('Coach Portal', root);
-}
 
 
 function Settings(){

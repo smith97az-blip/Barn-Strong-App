@@ -5,6 +5,21 @@ const qsa = s => [...document.querySelectorAll(s)];
 const ls = { get(k,f){ try{return JSON.parse(localStorage.getItem(k)) ?? f}catch{return f} }, set(k,v){ localStorage.setItem(k, JSON.stringify(v)) }, rm(k){ localStorage.removeItem(k) } };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+// v2.4 modal helper
+function openModal(contentHTML){
+  let m = document.getElementById('modal');
+  if(!m){
+    m = document.createElement('div');
+    m.id = 'modal';
+    m.className = 'modal';
+    m.innerHTML = `<div class="panel"><div id="modalBody"></div><div class="row mt"><button id="closeModal" class="btn ghost">Close</button></div></div>`;
+    document.body.appendChild(m);
+    m.addEventListener('click',(e)=>{ if(e.target.id==='modal' || e.target.id==='closeModal'){ m.classList.remove('open'); }});
+  }
+  m.querySelector('#modalBody').innerHTML = contentHTML;
+  m.classList.add('open');
+}
+
 // Theme install banner (kept, no analytics yet)
 let deferredPrompt; const installBtn = () => qs('#installBtn');
 window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); deferredPrompt = e; installBtn() && (installBtn().hidden=false); });

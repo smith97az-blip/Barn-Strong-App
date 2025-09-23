@@ -910,6 +910,7 @@ route('/coach', CoachPortal);
 route('/settings', Settings);
 route('/404', ()=> page('Not found', `<p class="muted">Page not found.</p>`));
 route('/unscheduled', UnscheduledSession);
+route('/unscheduled', UnscheduledSession);
 
 
 // Auth glue

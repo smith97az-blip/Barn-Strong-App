@@ -289,6 +289,7 @@ function TodaysSession(){
     <div class="chip">Status: ${status}</div>
     <button class="btn small" id="startBtn">Start</button>
     <button class="btn small" id="completeBtn">Complete</button>
+    <a href="#/unscheduled" class="btn small ghost">Unscheduled Session</a>
   `;
   el.appendChild(header);
 

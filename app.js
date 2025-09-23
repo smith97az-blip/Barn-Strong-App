@@ -363,6 +363,68 @@ function TodaysSession(){
   logEvent('session_opened', { date: today, scheduled: true, title: sess.title||'' });
 }
 
+function UnscheduledSession(){
+  const today = new Date().toISOString().slice(0,10);
+  const root = document.createElement('div');
+  root.innerHTML = `
+    <div class="grid two">
+      <label>Date <input id="d" type="date" value="${today}"/></label>
+      <label>Title <input id="t" placeholder="Custom workout"/></label>
+    </div>
+    <div class="divider"></div>
+    <div id="exList" class="list"></div>
+    <div class="row mt">
+      <input id="name" placeholder="Exercise name (search library)"/>
+      <input id="sets" type="number" placeholder="Sets"/>
+      <input id="reps" type="number" placeholder="Reps"/>
+      <input id="w" type="number" placeholder="Target lb"/>
+      <button id="add" class="btn small">Add</button>
+      <button id="save" class="btn">Save Session</button>
+    </div>
+  `;
+  const exList = root.querySelector('#exList');
+  const addRow = (e)=> {
+    const name = (root.querySelector('#name').value||'').trim();
+    const sets = parseInt(root.querySelector('#sets').value||'1',10);
+    const reps = parseInt(root.querySelector('#reps').value||'',10)||null;
+    const weight = parseFloat(root.querySelector('#w').value||'',10)||null;
+    if(!name) return;
+    const li = document.createElement('div'); li.className='item';
+    li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">${sets} x ${reps||'—'}${weight?' @ '+weight+' lb':''}</div></div>`;
+    li.dataset.payload = JSON.stringify({ name, sets, reps, weight });
+    exList.appendChild(li);
+    root.querySelector('#name').value=''; root.querySelector('#sets').value=''; root.querySelector('#reps').value=''; root.querySelector('#w').value='';
+  };
+  root.querySelector('#add').addEventListener('click', addRow);
+
+  root.querySelector('#save').addEventListener('click', async()=>{
+    const date = root.querySelector('#d').value||today;
+    const title = root.querySelector('#t').value||'Custom workout';
+    const blocks = [...exList.children].map(li=> JSON.parse(li.dataset.payload||'{}'));
+    if(!blocks.length) return alert('Add at least one exercise.');
+    // Log each set as entries for history; also create a "session" doc for the day.
+    try{
+      if(db && state.user){
+        const batch = db.batch();
+        const base = db.collection('logs').doc(state.user.uid).collection('entries');
+        blocks.forEach(b=>{
+          batch.set(base.doc(), { date, exercise:b.name, weight:b.weight||null, sets:b.sets||1, reps:b.reps||null, source:'unscheduled', createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        });
+        batch.set(db.collection('sessions').doc(state.user.uid).collection('days').doc(date), { status:'completed', title, custom:true, blocks, savedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+        await batch.commit();
+      }else{
+        const local = ls.get('bs_logs',[]);
+        blocks.forEach(b=> local.unshift({ date, exercise:b.name, weight:b.weight||null, sets:b.sets||1, reps:b.reps||null }));
+        ls.set('bs_logs', local);
+      }
+      alert('Unscheduled session saved!');
+      go('/dashboard');
+    }catch(e){ alert(e.message); }
+  });
+
+  page('Unscheduled Session', root);
+}
+
 
 function VariationRecord(){
   const root = document.createElement('div');
@@ -536,22 +598,189 @@ function CoachPortal(){
   const root = document.createElement('div');
   root.innerHTML = `
     <div class="grid two">
-      <label>Trainer Code <input id="tc" placeholder="BARN"/></label>
-      <label>Week Number <input id="wk" type="number" min="1" value="1"/></label>
+      <label>Trainer Code
+        <select id="trainerCode"></select>
+      </label>
+      <label>Assign to User
+        <select id="assignUser"><option value="">— select user —</option></select>
+      </label>
     </div>
+
+    <div class="divider"></div>
+    <div class="grid two">
+      <label>Week Number <input id="wk" type="number" min="1" value="1"/></label>
+      <label>Start Date <input id="startDate" placeholder="Pick a date"/></label>
+    </div>
+
     <div class="divider"></div>
     <div id="sessions"></div>
     <div class="row mt">
       <button class="btn" id="addSession">+ Add Session</button>
       <button class="btn ghost" id="dupWeek">Duplicate Week</button>
+      <button class="btn ghost" id="addTemplate">Template Builder</button>
     </div>
+
     <div class="divider"></div>
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
   `;
 
+  // flatpickr on Start Date
+  setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
+
   const sessions = [];
   const sessionsWrap = root.querySelector('#sessions');
+
+  function renderSessionCard(idx){
+    const s = sessions[idx];
+    const card = document.createElement('div'); card.className='item'; card.dataset.idx = idx;
+    card.innerHTML = `
+      <div class="grow">
+        <div class="grid two">
+          <label>Session Date <input class="date pick" value="${s.date||''}" placeholder="Pick date"/></label>
+          <label>Title <input class="title" value="${s.title||''}" placeholder="Upper A"/></label>
+        </div>
+        <div class="divider"></div>
+        <div class="small muted">Exercises</div>
+        <div class="list exlist"></div>
+        <div class="row mt">
+          <input class="exname" placeholder="Exercise name"/>
+          <input class="exsets" type="number" placeholder="Sets"/>
+          <input class="exreps" type="number" placeholder="Reps"/>
+          <input class="exload" type="number" placeholder="Target lb"/>
+          <button class="btn small addEx">Add</button>
+          <button class="btn small ghost dup">Duplicate session</button>
+          <button class="btn small danger del">Delete session</button>
+        </div>
+      </div>
+    `;
+    if(window.flatpickr){ flatpickr(card.querySelector('.pick'), { dateFormat:'Y-m-d', onChange:(sel)=> s.date = sel[0]?.toISOString().slice(0,10) }); }
+
+    const exlist = card.querySelector('.exlist');
+    (s.blocks||[]).forEach((b, i)=>{
+      const row = document.createElement('div'); row.className='item';
+      row.innerHTML = `<div class="grow">${b.name} — ${b.sets||1} x ${b.reps||''}${b.weight? ' @ '+b.weight+' lb':''}</div>`;
+      exlist.appendChild(row);
+    });
+
+    card.querySelector('.addEx').addEventListener('click', ()=>{
+      const name = card.querySelector('.exname').value.trim();
+      const sets = parseInt(card.querySelector('.exsets').value||'') || 1;
+      const reps = parseInt(card.querySelector('.exreps').value||'') || null;
+      const weight = parseFloat(card.querySelector('.exload').value||'') || null;
+      if(!sessions[idx].blocks) sessions[idx].blocks = [];
+      sessions[idx].blocks.push({ name, sets, reps, weight });
+      render();
+    });
+    card.querySelector('.dup').addEventListener('click', ()=>{
+      const clone = JSON.parse(JSON.stringify(sessions[idx]));
+      sessions.push(clone); render();
+    });
+    card.querySelector('.del').addEventListener('click', ()=>{
+      sessions.splice(idx,1); render();
+    });
+    card.querySelector('.title').addEventListener('input', e=> sessions[idx].title = e.target.value);
+
+    return card;
+  }
+
+  function render(){
+    sessionsWrap.innerHTML = '';
+    sessions.forEach((_, i)=> sessionsWrap.appendChild(renderSessionCard(i)));
+  }
+
+  root.querySelector('#addSession').addEventListener('click', ()=>{ sessions.push({ date:'', title:'', blocks:[] }); render(); });
+  root.querySelector('#dupWeek').addEventListener('click', ()=>{ const copies = sessions.map(s=> JSON.parse(JSON.stringify(s))); sessions.push(...copies); render(); });
+
+  // Template builder (multi-week) — simple wizard
+  root.querySelector('#addTemplate').addEventListener('click', ()=>{
+    openModal(`
+      <h3>Template Builder</h3>
+      <div class="grid two">
+        <label>Weeks <input id="tw" type="number" min="1" value="4"/></label>
+        <label>Sessions / Week <input id="ts" type="number" min="1" value="4"/></label>
+      </div>
+      <div class="row mt"><button id="gen" class="btn">Generate</button></div>
+      <div class="muted small mt">Generates empty sessions per week; you can fill exercises and dates quickly.</div>
+    `);
+    document.getElementById('gen').addEventListener('click', ()=>{
+      const W = parseInt(document.getElementById('tw').value||'4',10);
+      const S = parseInt(document.getElementById('ts').value||'4',10);
+      for(let w=0; w<W; w++){
+        for(let s=0; s<S; s++){
+          sessions.push({ date:'', title:`W${w+1} S${s+1}`, blocks:[] });
+        }
+      }
+      document.getElementById('modal')?.classList.remove('open');
+      render();
+    });
+  });
+
+  // Populate Trainer Codes & Users dropdowns
+  async function populateLookups(){
+    const codeSel = root.querySelector('#trainerCode');
+    const userSel = root.querySelector('#assignUser');
+    codeSel.innerHTML = ``; userSel.innerHTML = `<option value="">— select user —</option>`;
+
+    if(db && state.user){
+      // Trainer codes from `trainers` collection (doc id = code)
+      const codes = await db.collection('trainers').get();
+      codes.forEach(d=> {
+        const opt = document.createElement('option');
+        opt.value = d.id; opt.textContent = d.id;
+        codeSel.appendChild(opt);
+      });
+      if(!codes.size){ // default fallback
+        const opt = document.createElement('option'); opt.value='BARN'; opt.textContent='BARN'; codeSel.appendChild(opt);
+      }
+
+      // Users (limited fields). Requires rules that allow coach to read users list (see rules section).
+      const users = await db.collection('users').limit(200).get();
+      users.forEach(u=>{
+        const d = u.data();
+        const opt = document.createElement('option');
+        opt.value = u.id;
+        opt.textContent = d.username || d.email || u.id.slice(0,6);
+        userSel.appendChild(opt);
+      });
+    }else{
+      // local demo
+      const opt = document.createElement('option'); opt.value='local'; opt.textContent='Demo User'; userSel.appendChild(opt);
+      const opt2 = document.createElement('option'); opt2.value='BARN'; opt2.textContent='BARN'; codeSel.appendChild(opt2);
+    }
+  }
+
+  root.querySelector('#publish').addEventListener('click', async()=>{
+    const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
+    const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
+    const startDate = root.querySelector('#startDate').value || null;
+    const targetUser = root.querySelector('#assignUser').value || '';
+
+    if(!sessions.length) return alert('Add at least one session.');
+    if(!db || !state.user) return alert('Login + Firebase required');
+
+    try{
+      // 1) Save the week's template under programs/{code}/weeks/{n}
+      await db.collection('programs').doc(trainerCode).collection('weeks').doc(String(weekNumber))
+        .set({ weekNumber, sessions }, { merge: true });
+
+      // 2) If a user is selected, assign to that user by writing a simple assignment doc
+      if(targetUser){
+        await db.collection('assignments').doc(targetUser).set({
+          trainerCode, weekNumber, startDate: startDate || new Date().toISOString().slice(0,10),
+          assignedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+      }
+
+      alert('Published!');
+      root.querySelector('#out').textContent = `Published week ${weekNumber} (${sessions.length} sessions)${targetUser? ' and assigned to user':''}.`;
+    }catch(e){ alert(e.message); }
+  });
+
+  populateLookups();
+  page('Coach Portal', root);
+}
+
 
   function renderSessionCard(idx){
     const s = sessions[idx];
@@ -746,6 +975,8 @@ route('/exercises', ExerciseLibrary);
 route('/coach', CoachPortal);
 route('/settings', Settings);
 route('/404', ()=> page('Not found', `<p class="muted">Page not found.</p>`));
+route('/unscheduled', UnscheduledSession);
+
 
 // Auth glue
 async function main(){

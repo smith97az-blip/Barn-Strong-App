@@ -592,7 +592,7 @@ const DEFAULT_EXERCISES = [
   "Decline Crunch",
   "Reverse Banded Cambered Bar Free Squat",
   "Front Squat",
-  "Barbell RDL"
+  "Barbell RDL",
   "Barbell Walking Lunge",
   "Leg Extension",
   "Glute Ham Developer",

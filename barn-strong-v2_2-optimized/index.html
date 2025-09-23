@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <meta name="theme-color" content="#7A0B16"/>
+    <title>Barn Strong</title>
+    <link rel="manifest" href="manifest.json"/>
+    <link rel="stylesheet" href="style.css"/>
+    <!-- Firebase (compat for simplicity) -->
+    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+    <script defer src="firebase-config.js"></script>
+    <script defer src="app.js"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+      }
+    </script>
+  </head>
+  <body>
+    <header class="topbar">
+      <button id="hamburger" class="icon-btn" aria-label="Menu">☰</button>
+      <h1>Barn Strong</h1>
+      <button id="installBtn" class="btn ghost" hidden>Install</button>
+    </header>
+
+    <!-- Drawer -->
+    <aside id="drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-head">
+        <img src="assets/mascot.svg" alt="Barn Strong" class="avatar-img"/>
+        <div>
+          <div id="drawerName" class="bold">Guest</div>
+          <div id="drawerGoal" class="muted small">Goal: —</div>
+        </div>
+      </div>
+      <nav class="drawer-nav">
+        <a href="#/dashboard" class="navlink">Dashboard</a>
+        <a href="#/calendar" class="navlink">Calendar</a>
+        <a href="#/today" class="navlink">Today's Session</a>
+        <a href="#/variations" class="navlink">Variation Record</a>
+        <a href="#/program" class="navlink">Program View</a>
+        <a href="#/exercises" class="navlink">Exercise Library</a>
+        <a href="#/coach" class="navlink">Coach Portal</a>
+        <div class="divider"></div>
+        <a href="#/settings" class="navlink">Settings</a>
+        <button id="logoutBtn" class="btn danger wfull mt">Log out</button>
+      </nav>
+    </aside>
+    <div id="scrim" class="scrim" hidden></div>
+
+    <main id="root" class="container"></main>
+
+    <footer class="foot">
+      <small>&copy; 2025 Barn Strong. PWA v2.2 (optimized).</small>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "Barn Strong",
+  "short_name": "Barn Strong",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#7A0B16",
+  "theme_color": "#7A0B16",
+  "icons": [
+    {
+      "src": "assets/mascot.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

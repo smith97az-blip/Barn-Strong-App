@@ -890,12 +890,12 @@ qs('#hamburger').addEventListener('click', ()=> openDrawer(true));
 scrim.addEventListener('click', ()=> openDrawer(false));
 function openDrawer(open){ drawer.classList.toggle('open', open); scrim.hidden = !open; }
 
-// Close side menu when a link is clicked
-document.querySelectorAll('#sideMenu a').forEach(link => {
-  link.addEventListener('click', () => {
-    document.getElementById('sideMenu').classList.remove('open');
-  });
+// Auto-close the drawer when any link inside it is clicked
+drawer.addEventListener('click', (e) => {
+  const link = e.target.closest('a');   // catches <a> or children inside it
+  if (link) openDrawer(false);          // closes drawer + hides scrim
 });
+
 
 
 // Routes

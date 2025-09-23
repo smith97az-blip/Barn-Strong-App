@@ -156,18 +156,64 @@ function Dashboard(){
       <div class="tile"><div class="title">PRs Found</div><div class="value">${prCount}</div></div>
       <div class="tile"><div class="title">Volume (7d)</div><div class="value">${volume7}</div></div>
     </div>
-    <div class="divider"></div>
-    <div class="chips">
-      <a class="chip" href="#/today">Today’s Session</a>
-      <a class="chip" href="#/calendar">Calendar</a>
-      <a class="chip" href="#/variations">Variation Record</a>
-      <a class="chip" href="#/program">Program View</a>
-      <a class="chip" href="#/exercises">Exercise Library</a>
-      <a class="chip" href="#/coach">Coach Portal</a>
+    <div class="card chart-card">
+      <h3>Training Volume (last 30 days)</h3>
+      <canvas id="volChart"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3>Estimated 1RM Trend (top 5 exercises)</h3>
+      <canvas id="rmChart"></canvas>
     </div>
   `;
   page('Dashboard', el);
+
+  // Charts
+  setTimeout(()=> {
+    renderVolumeChart('volChart', state.logs || []);
+    renderRmChart('rmChart', state.logs || []);
+  }, 10);
 }
+
+// v2.4 charts helpers
+function renderVolumeChart(canvasId, logs){
+  const day = (d)=> d.toISOString().slice(0,10);
+  const labels = [];
+  const data = [];
+  for(let i=29;i>=0;i--){
+    const dt = new Date(); dt.setDate(dt.getDate()-i);
+    const k = day(dt);
+    labels.push(k.slice(5));
+    const vol = (logs||[]).filter(l=>l.date===k).reduce((s,l)=> s + (l.weight||0)*(l.reps||1)*(l.sets||1), 0);
+    data.push(vol);
+  }
+  const ctx = document.getElementById(canvasId);
+  if(!ctx || !window.Chart) return;
+  new Chart(ctx, { type:'bar', data:{ labels, datasets:[{ label:'Daily Volume', data }] }, options:{ responsive:true, plugins:{ legend:{ display:false }}, scales:{ y:{ beginAtZero:true }}}});
+}
+function renderRmChart(canvasId, logs){
+  // simple e1RM = weight * (1 + reps/30)
+  const map = {}; // exercise -> array of [date, e1rm]
+  (logs||[]).forEach(l=>{
+    const name = l.exercise||'?';
+    const e1 = (l.weight||0) * (1 + (l.reps||1)/30);
+    if(!map[name]) map[name]=[];
+    map[name].push([l.date, e1]);
+  });
+  // pick top 5 by max e1rm
+  const top = Object.entries(map).map(([k,v])=> [k, Math.max(...v.map(x=>x[1]))]).sort((a,b)=> b[1]-a[1]).slice(0,5).map(x=>x[0]);
+  const dates = [...new Set((logs||[]).map(l=>l.date))].sort();
+  const datasets = top.map((name, i)=>{
+    const series = dates.map(d=>{
+      const arr = (map[name]||[]).filter(x=>x[0]===d).map(x=>x[1]);
+      return arr.length? Math.max(...arr): null;
+    });
+    return { label: name, data: series };
+  });
+  const ctx = document.getElementById(canvasId);
+  if(!ctx || !window.Chart) return;
+  new Chart(ctx, { type:'line', data:{ labels: dates.map(d=>d.slice(5)), datasets }, options:{ responsive:true, scales:{ y:{ beginAtZero:true }}}});
+}
+
 
 // helpers used above
 function calcStreak(logs){
@@ -363,7 +409,7 @@ function VariationRecord(){
 
       const li = document.createElement('li'); li.className='item';
       li.innerHTML = `<div class="grow">
-        <div class="bold">${name}</div>
+        <div class="bold" style="cursor:pointer;text-decoration:underline;" data-ex="${name}">${name}</div>
         <div class="muted small">${text}</div>
         <div class="row mt">
           <label>Date <input class="d" type="date"/></label>
@@ -399,6 +445,28 @@ function VariationRecord(){
       li.dataset.sortHeaviest = scoreHeaviest;
 
       ul.appendChild(li);
+      li.querySelector('[data-ex]')?.addEventListener('click', ()=>{
+  const ex = name;
+  const rows = (state.logs||[]).filter(h=>h.exercise===ex).sort((a,b)=> a.date.localeCompare(b.date));
+  const table = rows.slice(-30).map(h=> `<div class="row small"><div style="width:92px">${h.date}</div><div>${h.weight??'-'} lb × ${h.reps??'-'} (sets ${h.sets??1})</div></div>`).join('');
+  openModal(`
+    <h3>${ex}</h3>
+    <div class="muted small">Recent history</div>
+    <div class="divider"></div>
+    <div>${table || 'No history yet.'}</div>
+    <div class="divider"></div>
+    <canvas id="exChart" style="width:100%;height:220px"></canvas>
+  `);
+  setTimeout(()=>{
+    const pts = rows.map(h=> ({ x: h.date, y: (h.weight||0)*(1+(h.reps||1)/30) }));
+    const labels = pts.map(p=> p.x.slice(5));
+    const data = pts.map(p=> p.y);
+    if(window.Chart){
+      new Chart(document.getElementById('exChart'), { type:'line', data:{ labels, datasets:[{ label:'e1RM', data }] }, options:{ responsive:true, scales:{ y:{ beginAtZero:true }}, plugins:{ legend:{ display:false }}}});
+    }
+  },10);
+});
+
     });
 
     const items = Array.from(ul.children);

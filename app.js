@@ -989,3 +989,5 @@ document.addEventListener('click', (e)=>{
 });
 
 main();
+
+qs('#splash')?.remove();

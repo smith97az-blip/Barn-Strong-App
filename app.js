@@ -275,12 +275,18 @@ function TodaysSession(){
   const sess = (state.sessionsMap || {})[today];
   const el = document.createElement('div');
 
-  if(!sess){
-    const next = findNextSession(state.sessionsMap || {});
-    el.innerHTML = `<p>No session scheduled for today.</p><p class="muted">Next: ${next? (next.date+' — '+next.title) : 'No upcoming'}</p>`;
-    logEvent('session_opened', { date: today, scheduled: false });
-    return page("Today's Session", el);
-  }
+  if (!sess) {
+  const next = findNextSession(state.sessionsMap || {});
+  el.innerHTML = `
+    <div class="row">
+      <div class="chip">No scheduled session</div>
+      <a href="#/unscheduled" class="btn small ghost">Unscheduled Session</a>
+    </div>
+    <p class="muted">Next: ${ next ? (next.date + ' — ' + next.title) : 'No upcoming' }</p>
+  `;
+  logEvent('session_opened', { date: today, scheduled: false });
+  return page("Today's Session", el);
+}
 
   const status = sess.status || 'planned';
   const header = document.createElement('div');

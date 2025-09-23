@@ -82,7 +82,7 @@ function Login(){
   const wrap = document.createElement('div');
   wrap.className='login-wrap card';
   wrap.innerHTML = `
-    <img class="brand-logo" src="assets/mascot.svg" alt="Barn Strong"/>
+    <img class="brand-logo" src="assets/mascot-barn-angry.png?v=v2.4.3" alt="Barn Strong Mascot"/>
     <h2>Welcome to Barn Strong</h2>
     <p class="muted">Log in to start training.</p>
     <div class="grid">
@@ -95,47 +95,72 @@ function Login(){
     <div class="divider"></div>
     <p class="muted small">Tip: without Firebase config this runs locally for demo.</p>
   `;
+
+  // Login button
   wrap.querySelector('#loginBtn').addEventListener('click', async()=>{
     const email = wrap.querySelector('#email').value.trim();
     const pass = wrap.querySelector('#pass').value.trim();
     if(auth){
-      try{ await auth.signInWithEmailAndPassword(email, pass); }catch(e){ alert(e.message); }
+      try{
+        await auth.signInWithEmailAndPassword(email, pass);
+      }catch(e){
+        alert(e.message);
+      }
     }else{
       state.user = { uid:'local', email };
       state.profile = ls.get('bs_profile', { username: email.split('@')[0], goal:'', trainerCode:'BARN'});
       ensureLocalExercises();
+
       // v2.3: seed a full exercise library for first-time cloud users
-async function ensureExercises(){
-  if(!db || !state.user) return;
-  try{
-    const snap = await db.collection('users').doc(state.user.uid).collection('exercises').limit(1).get();
-    if(snap.empty){
-      const batch = db.batch();
-      const ref = db.collection('users').doc(state.user.uid).collection('exercises');
-      DEFAULT_EXERCISES.forEach(name=>{
-        const id = slug(name);
-        batch.set(ref.doc(id), { name });
-      });
-      await batch.commit();
-    }
-  }catch(e){ console.warn('ensureExercises error', e); }
-}
+      async function ensureExercises(){
+        if(!db || !state.user) return;
+        try{
+          const snap = await db.collection('users').doc(state.user.uid).collection('exercises').limit(1).get();
+          if(snap.empty){
+            const batch = db.batch();
+            const ref = db.collection('users').doc(state.user.uid).collection('exercises');
+            DEFAULT_EXERCISES.forEach(name=>{
+              const id = slug(name);
+              batch.set(ref.doc(id), { name });
+            });
+            await batch.commit();
+          }
+        }catch(e){ console.warn('ensureExercises error', e); }
+      }
 
       go('/dashboard');
     }
   });
+
+  // Signup button
   wrap.querySelector('#signupBtn').addEventListener('click', async()=>{
     if(!auth) return alert('Connect Firebase to enable signup.');
-    const email = wrap.querySelector('#email').value.trim(); const pass = wrap.querySelector('#pass').value.trim();
-    try{ await auth.createUserWithEmailAndPassword(email, pass); alert('Account created! Verify your email.'); }catch(e){ alert(e.message); }
+    const email = wrap.querySelector('#email').value.trim();
+    const pass = wrap.querySelector('#pass').value.trim();
+    try{
+      await auth.createUserWithEmailAndPassword(email, pass);
+      alert('Account created! Verify your email.');
+    }catch(e){
+      alert(e.message);
+    }
   });
+
+  // Reset button
   wrap.querySelector('#resetBtn').addEventListener('click', async()=>{
     if(!auth) return alert('Connect Firebase to enable reset.');
     const email = wrap.querySelector('#email').value.trim();
-    try{ await auth.sendPasswordResetEmail(email); alert('Reset email sent!'); }catch(e){ alert(e.message); }
+    try{
+      await auth.sendPasswordResetEmail(email);
+      alert('Reset email sent!');
+    }catch(e){
+      alert(e.message);
+    }
   });
-  qs('#root').innerHTML=''; qs('#root').appendChild(wrap);
+
+  qs('#root').innerHTML='';
+  qs('#root').appendChild(wrap);
 }
+
 
 function Dashboard(){
   const totalSessions = new Set(state.logs.map(h=>h.date)).size;

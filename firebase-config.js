@@ -1,9 +1,9 @@
-// Replace with your actual config or keep as-is if already set up
-window.__FIREBASE_CONFIG__ = window.__FIREBASE_CONFIG__ || {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_AUTH_DOMAIN",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_BUCKET",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+const firebaseConfig = {
+  apiKey: "AIzaSyCq21u_uqORV-psuTY2CfHvURqSEsvTH4Q",
+  authDomain: "barn-strong-app.firebaseapp.com",
+  projectId: "barn-strong-app",
+  storageBucket: "barn-strong-app.firebasestorage.app",
+  messagingSenderId: "138604185630",
+  appId: "1:138604185630:web:22768be8db4e4238f3c60f",
+  measurementId: "G-D0LF645W7L"
 };

@@ -8,12 +8,14 @@
     <link rel="manifest" href="manifest.json"/>
     <link rel="stylesheet" href="style.css"/>
     <!-- Firebase (compat for simplicity) -->
-    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-    <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-    
-    <script defer src="firebase-config.js"></script>
-    <script defer src="app.js"></script>
+ <script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<!-- add ?v=... so new deploys bypass old cache -->
+<script defer src="firebase-config.js?v=v2.3.2"></script>
+<script defer src="app.js?v=v2.3.2"></script>
+
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));

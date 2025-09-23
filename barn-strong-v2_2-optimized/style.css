@@ -50,3 +50,11 @@ textarea{min-height:60px;resize:vertical}
 .login-wrap{max-width:480px;margin:40px auto;text-align:center}
 .brand-logo{width:160px;height:160px;margin:0 auto 12px auto;display:block}
 .center{text-align:center}
+
+/* v2.3: Online/Offline banner */
+.net-banner {
+  text-align:center;
+  padding:8px 12px;
+  color:#FDEDD0; /* matches --ink */
+  font-size:12px;
+}

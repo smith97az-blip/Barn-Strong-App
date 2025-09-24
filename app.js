@@ -689,57 +689,67 @@ function CoachPortal(){
       <button class="btn" id="addSession">+ Add Session</button>
       <button class="btn ghost" id="dupWeek">Duplicate Week</button>
       <button class="btn ghost" id="addTemplate">Template Builder</button>
+      <button class="btn ghost" id="athleteViewBtn">Athlete View</button>
     </div>
 
     <div class="divider"></div>
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
   `;
-
+  
+root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
+  
+  
   // flatpickr on Start Date
   setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
 
   const sessions = [];
   const sessionsWrap = root.querySelector('#sessions');
 
-  function renderSessionCard(idx){
-    const s = sessions[idx];
-    const card = document.createElement('div'); card.className='item'; card.dataset.idx = idx;
-    card.innerHTML = `
-    // Populate the exercise dropdown
-(function attachSelect(){
-  const slot = card.querySelector('.exname-slot');
-  if (!slot) return;
-  // Use cached options if present; otherwise load then replace
-  const apply = (names)=> { slot.replaceWith(makeExerciseSelect('exname', names)); };
-  if (_exerciseNamesCache) { apply(_exerciseNamesCache); }
-  else { getExerciseNames().then(apply).catch(()=> apply([])); }
-})();
-      <div class="grow">
-        <div class="grid two">
-          <label>Session Date <input class="date pick" value="${s.date||''}" placeholder="Pick date"/></label>
-          <label>Title <input class="title" value="${s.title||''}" placeholder="Upper A"/></label>
-        </div>
-        <div class="divider"></div>
-        <div class="small muted">Exercises</div>
-        <div class="list exlist"></div>
-        <div class="row mt">
-          <span class="exname-slot"></span>
-          <input class="exsets" type="number" placeholder="Sets"/>
-          <input class="exreps" type="number" placeholder="Reps"/>
-          <input class="exload" type="number" placeholder="Target lb"/>
-          <button class="btn small addEx">Add</button>
-          <button class="btn small ghost dup">Duplicate session</button>
-          <button class="btn small danger del">Delete session</button>
-        </div>
+ function renderSessionCard(idx){
+  const s = sessions[idx];
+  const card = document.createElement('div');
+  card.className = 'item';
+  card.dataset.idx = idx;
+
+  // 1) Build the HTML
+  card.innerHTML = `
+    <div class="grow">
+      <div class="grid two">
+        <label>Session Date <input class="date pick" value="${s.date||''}" placeholder="Pick date"/></label>
+        <label>Title <input class="title" value="${s.title||''}" placeholder="Upper A"/></label>
       </div>
-    `;
-    if(window.flatpickr){
-      flatpickr(card.querySelector('.pick'), {
-        dateFormat:'Y-m-d',
-        onChange:(sel)=> s.date = sel[0]?.toISOString().slice(0,10)
-      });
-    }
+      <div class="divider"></div>
+      <div class="small muted">Exercises</div>
+      <div class="list exlist"></div>
+      <div class="row mt">
+        <span class="exname-slot"></span>
+        <input class="exsets" type="number" placeholder="Sets"/>
+        <input class="exreps" type="number" placeholder="Reps"/>
+        <input class="exload" type="number" placeholder="Target lb"/>
+        <button class="btn small addEx">Add</button>
+        <button class="btn small ghost dup">Duplicate session</button>
+        <button class="btn small danger del">Delete session</button>
+      </div>
+    </div>
+  `;
+
+  // 2) NOW inject the exercise dropdown into .exname-slot
+  (function attachSelect(){
+    const slot = card.querySelector('.exname-slot');
+    if (!slot) return;
+    const apply = (names)=> { slot.replaceWith(makeExerciseSelect('exname', names)); };
+    if (_exerciseNamesCache) apply(_exerciseNamesCache);
+    else getExerciseNames().then(apply).catch(()=> apply([]));
+  })();
+
+  // 3) Date picker
+  if (window.flatpickr) {
+    flatpickr(card.querySelector('.pick'), {
+      dateFormat: 'Y-m-d',
+      onChange: (sel)=> s.date = sel[0]?.toISOString().slice(0,10)
+    });
+  }
 
     const exlist = card.querySelector('.exlist');
     (s.blocks||[]).forEach(b=>{

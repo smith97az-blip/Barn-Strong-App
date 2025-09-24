@@ -62,6 +62,97 @@ function openModal(contentHTML){
   m.classList.add('open');
 }
 
+// --- Program hydration helpers ---
+function addDaysISO(iso, n){
+  const d = new Date(iso); d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0,10);
+}
+
+function defaultOffsetsForCount(n){
+  // Friendly defaults for common weekly structures.
+  if (n === 4) return [0,2,4,6];    // Mon/Wed/Fri/Sun
+  if (n === 3) return [0,2,5];      // Mon/Wed/Sat
+  if (n === 5) return [0,1,3,4,6];  // Mon/Tue/Thu/Fri/Sun
+  // Fallback: consecutive days
+  return Array.from({length:n}, (_,i)=> i);
+}
+
+function buildSessionsMapFromWeeks(weeks, startDateISO){
+  const map = {};
+  if (!weeks || !weeks.length) return map;
+
+  const base = startDateISO || new Date().toISOString().slice(0,10);
+
+  // Sort by numeric weekNumber (tolerates doc id strings)
+  const ordered = weeks.slice().sort((a,b)=>
+    (Number(a.weekNumber)||0) - (Number(b.weekNumber)||0)
+  );
+
+  ordered.forEach((w, wi)=>{
+    const sessions = w.sessions || [];
+    const offsets = defaultOffsetsForCount(sessions.length);
+
+    sessions.forEach((s, i)=>{
+      // If coach provided an explicit date in the session, use it. Otherwise, compute.
+      const computed = addDaysISO(addDaysISO(base, wi * 7), offsets[i] ?? i);
+      const date = s.date || computed;
+      map[date] = {
+        ...s,
+        date,
+        title: s.title || `W${w.weekNumber || (wi+1)} S${i+1}`
+      };
+    });
+  });
+  return map;
+}
+
+// Attach live sync from assignments + programs → state.program + state.sessionsMap
+function attachProgramSync(uid){
+  // Clean up previous listeners if any
+  if (!state.unsub) state.unsub = [];
+  state.unsub.forEach(u => { try{ u(); }catch{} });
+  state.unsub = [];
+
+  const unsubAssign = db.collection('assignments').doc(uid).onSnapshot(async (doc)=>{
+    if (!doc.exists){
+      state.program = [];
+      state.sessionsMap = {};
+      rerenderIfProgramPages();
+      return;
+    }
+    const { trainerCode, startDate } = doc.data() || {};
+    if (!trainerCode){
+      state.program = [];
+      state.sessionsMap = {};
+      rerenderIfProgramPages();
+      return;
+    }
+
+    // Load all weeks for the trainer code (coach publishes here)
+    const weeksSnap = await db.collection('programs').doc(trainerCode).collection('weeks').get();
+    const weeks = weeksSnap.docs.map(d => {
+      const data = d.data() || {};
+      const wn = data.weekNumber != null ? data.weekNumber : Number(d.id) || null;
+      return { weekNumber: wn, ...data };
+    });
+
+    state.program = weeks;
+    state.sessionsMap = buildSessionsMapFromWeeks(weeks, startDate);
+    rerenderIfProgramPages();
+  });
+
+  state.unsub.push(unsubAssign);
+}
+
+function rerenderIfProgramPages(){
+  const path = location.hash.replace('#','') || '/login';
+  // Lightweight: force a re-render if the user is on a page that shows program/sessions.
+  if (['/dashboard','/calendar','/today','/program'].includes(path)) {
+    render();
+  }
+}
+
+
 function calcStreak(logs){
   const days = new Set((logs||[]).map(h=>h.date));
   let streak=0; const today = new Date();
@@ -574,10 +665,36 @@ function VariationRecord(){
 
 // ---- Program View ----
 function ProgramView(){
-  const el = document.createElement('div');
-  if(!state.program.length) el.innerHTML = `<p class="muted">No program published yet.</p>`;
-  page('Program View', el);
+  const root = document.createElement('div');
+
+  if(!state.program || !state.program.length){
+    root.innerHTML = `<p class="muted">No program published yet.</p>`;
+    return page('Program View', root);
+  }
+
+  const list = document.createElement('ul'); list.className = 'list';
+  const weeks = state.program.slice().sort((a,b)=>
+    (Number(a.weekNumber)||0) - (Number(b.weekNumber)||0)
+  );
+
+  weeks.forEach(w=>{
+    const li = document.createElement('li'); li.className = 'item';
+    const sessions = w.sessions || [];
+    const inner = sessions.map((s, i) => {
+      const d = s.date || '—';
+      const t = s.title || `Session ${i+1}`;
+      return `<div class="row small"><div class="bold">${t}</div><div class="muted">${d}</div></div>`;
+    }).join('');
+    li.innerHTML = `<div class="grow">
+      <div class="bold">Week ${w.weekNumber ?? '—'}</div>
+      <div class="mt small">${inner || 'No sessions in this week.'}</div>
+    </div>`;
+    list.appendChild(li);
+  });
+
+  page('Program View', list);
 }
+
 
 // ---- Exercise Library ----
 function ExerciseLibrary(){
@@ -1152,6 +1269,9 @@ async function main(){
       db.collection('logs').doc(user.uid).collection('entries')
         .orderBy('date','desc').limit(300)
         .onSnapshot(s=>{ state.logs = s.docs.map(d=> d.data()); });
+
+      attachProgramSync(user.uid);
+      
       go('/dashboard');
     });
   }else{

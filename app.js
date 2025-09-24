@@ -20,6 +20,33 @@ function openModal(contentHTML){
   m.classList.add('open');
 }
 
+// v2.5 — exercise library → dropdowns
+let _exerciseNamesCache = null;
+async function loadExerciseLibraryNames(){
+  const names = new Set((typeof DEFAULT_EXERCISES !== 'undefined' ? DEFAULT_EXERCISES : []));
+  // Pull user-added exercises if available (coach account or local)
+  try {
+    if (db && state?.user?.uid) {
+      const snap = await db.collection('users').doc(state.user.uid).collection('exercises').get();
+      snap.forEach(d => d.data()?.name && names.add(d.data().name));
+    } else {
+      (ls.get('bs_exercises', []) || []).forEach(n => names.add(n));
+    }
+  } catch(e){ console.warn('loadExerciseLibraryNames', e); }
+  return [...names].sort();
+}
+async function getExerciseNames() {
+  if (_exerciseNamesCache) return _exerciseNamesCache;
+  _exerciseNamesCache = await loadExerciseLibraryNames();
+  return _exerciseNamesCache;
+}
+function makeExerciseSelect(className='exname', options=[]){
+  const sel = document.createElement('select');
+  sel.className = className;
+  sel.innerHTML = `<option value="">— select exercise —</option>` + options.map(n=>`<option value="${n}">${n}</option>`).join('');
+  return sel;
+}
+
 // Theme install banner (kept, no analytics yet)
 let deferredPrompt; const installBtn = () => qs('#installBtn');
 window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); deferredPrompt = e; installBtn() && (installBtn().hidden=false); });
@@ -395,8 +422,10 @@ function TodaysSession(){
   logEvent('session_opened', { date: today, scheduled: true, title: sess.title||'' });
 }
 
-function UnscheduledSession(){
+async function UnscheduledSession(){
   const today = new Date().toISOString().slice(0,10);
+  const names = await getExerciseNames(); // dropdown options
+
   const root = document.createElement('div');
   root.innerHTML = `
     <div class="grid two">
@@ -406,47 +435,58 @@ function UnscheduledSession(){
     <div class="divider"></div>
     <div id="exList" class="list"></div>
     <div class="row mt">
-      <input id="name" placeholder="Exercise name (search library)"/>
+      <span id="exSlot"></span>
       <input id="sets" type="number" placeholder="Sets"/>
       <input id="reps" type="number" placeholder="Reps"/>
-      <input id="w" type="number" placeholder="Target lb"/>
+      <input id="w" type="number" placeholder="Weight"/>
       <button id="add" class="btn small">Add</button>
       <button id="save" class="btn">Save Session</button>
     </div>
   `;
-  const exList = root.querySelector('#exList');
-  const addRow = (e)=> {
-    const name = (root.querySelector('#name').value||'').trim();
-    const sets = parseInt(root.querySelector('#sets').value||'1',10);
-    const reps = parseInt(root.querySelector('#reps').value||'',10)||null;
-    const weight = parseFloat(root.querySelector('#w').value||'',10)||null;
-    if(!name) return;
-    const li = document.createElement('div'); li.className='item';
-    li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">${sets} x ${reps||'—'}${weight?' @ '+weight+' lb':''}</div></div>`;
-    li.dataset.payload = JSON.stringify({ name, sets, reps, weight });
-    exList.appendChild(li);
-    root.querySelector('#name').value=''; root.querySelector('#sets').value=''; root.querySelector('#reps').value=''; root.querySelector('#w').value='';
-  };
-  root.querySelector('#add').addEventListener('click', addRow);
 
-  root.querySelector('#save').addEventListener('click', async()=>{
-    const date = root.querySelector('#d').value||today;
-    const title = root.querySelector('#t').value||'Custom workout';
-    const blocks = [...exList.children].map(li=> JSON.parse(li.dataset.payload||'{}'));
+  // install exercise dropdown
+  const sel = makeExerciseSelect('exname', names);
+  root.querySelector('#exSlot').replaceWith(sel);
+
+  const exList = root.querySelector('#exList');
+  root.querySelector('#add').addEventListener('click', ()=>{
+    const name = root.querySelector('.exname').value.trim();
+    const sets = parseInt(root.querySelector('#sets').value||'1',10);
+    const reps = parseInt(root.querySelector('#reps').value||'') || null;
+    const weight = parseFloat(root.querySelector('#w').value||'') || null;
+    if(!name) return alert('Choose an exercise.');
+    const row = document.createElement('div'); row.className='item';
+    row.dataset.payload = JSON.stringify({ name, sets, reps, weight });
+    row.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">${sets} x ${reps??'—'}${weight?' @ '+weight+' lb':''}</div></div>`;
+    exList.appendChild(row);
+    // reset (keep exercise selection)
+    ['#sets','#reps','#w'].forEach(sel=> root.querySelector(sel).value='');
+  });
+
+  root.querySelector('#save').addEventListener('click', async ()=>{
+    const date = root.querySelector('#d').value || today;
+    const title = root.querySelector('#t').value || 'Custom workout';
+    const blocks = [...exList.children].map(li=> JSON.parse(li.dataset.payload));
     if(!blocks.length) return alert('Add at least one exercise.');
-    // Log each set as entries for history; also create a "session" doc for the day.
     try{
       if(db && state.user){
         const batch = db.batch();
         const base = db.collection('logs').doc(state.user.uid).collection('entries');
         blocks.forEach(b=>{
-          batch.set(base.doc(), { date, exercise:b.name, weight:b.weight||null, sets:b.sets||1, reps:b.reps||null, source:'unscheduled', createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+          batch.set(base.doc(), {
+            date, exercise:b.name, weight:b.weight??null, sets:b.sets||1, reps:b.reps??null,
+            source:'unscheduled', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
         });
-        batch.set(db.collection('sessions').doc(state.user.uid).collection('days').doc(date), { status:'completed', title, custom:true, blocks, savedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+        batch.set(
+          db.collection('sessions').doc(state.user.uid).collection('days').doc(date),
+          { status:'completed', title, custom:true, blocks, savedAt: firebase.firestore.FieldValue.serverTimestamp() },
+          { merge:true }
+        );
         await batch.commit();
       }else{
         const local = ls.get('bs_logs',[]);
-        blocks.forEach(b=> local.unshift({ date, exercise:b.name, weight:b.weight||null, sets:b.sets||1, reps:b.reps||null }));
+        blocks.forEach(b=> local.unshift({ date, exercise:b.name, weight:b.weight??null, sets:b.sets||1, reps:b.reps??null }));
         ls.set('bs_logs', local);
       }
       alert('Unscheduled session saved!');
@@ -456,7 +496,6 @@ function UnscheduledSession(){
 
   page('Unscheduled Session', root);
 }
-
 
 function VariationRecord(){
   const root = document.createElement('div');
@@ -650,48 +689,67 @@ function CoachPortal(){
       <button class="btn" id="addSession">+ Add Session</button>
       <button class="btn ghost" id="dupWeek">Duplicate Week</button>
       <button class="btn ghost" id="addTemplate">Template Builder</button>
+      <button class="btn ghost" id="athleteViewBtn">Athlete View</button>
     </div>
 
     <div class="divider"></div>
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
   `;
-
+  
+root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
+  
+  
   // flatpickr on Start Date
   setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
 
   const sessions = [];
   const sessionsWrap = root.querySelector('#sessions');
 
-  function renderSessionCard(idx){
-    const s = sessions[idx];
-    const card = document.createElement('div'); card.className='item'; card.dataset.idx = idx;
-    card.innerHTML = `
-      <div class="grow">
-        <div class="grid two">
-          <label>Session Date <input class="date pick" value="${s.date||''}" placeholder="Pick date"/></label>
-          <label>Title <input class="title" value="${s.title||''}" placeholder="Upper A"/></label>
-        </div>
-        <div class="divider"></div>
-        <div class="small muted">Exercises</div>
-        <div class="list exlist"></div>
-        <div class="row mt">
-          <input class="exname" placeholder="Exercise name"/>
-          <input class="exsets" type="number" placeholder="Sets"/>
-          <input class="exreps" type="number" placeholder="Reps"/>
-          <input class="exload" type="number" placeholder="Target lb"/>
-          <button class="btn small addEx">Add</button>
-          <button class="btn small ghost dup">Duplicate session</button>
-          <button class="btn small danger del">Delete session</button>
-        </div>
+ function renderSessionCard(idx){
+  const s = sessions[idx];
+  const card = document.createElement('div');
+  card.className = 'item';
+  card.dataset.idx = idx;
+
+  // 1) Build the HTML
+  card.innerHTML = `
+    <div class="grow">
+      <div class="grid two">
+        <label>Session Date <input class="date pick" value="${s.date||''}" placeholder="Pick date"/></label>
+        <label>Title <input class="title" value="${s.title||''}" placeholder="Upper A"/></label>
       </div>
-    `;
-    if(window.flatpickr){
-      flatpickr(card.querySelector('.pick'), {
-        dateFormat:'Y-m-d',
-        onChange:(sel)=> s.date = sel[0]?.toISOString().slice(0,10)
-      });
-    }
+      <div class="divider"></div>
+      <div class="small muted">Exercises</div>
+      <div class="list exlist"></div>
+      <div class="row mt">
+        <span class="exname-slot"></span>
+        <input class="exsets" type="number" placeholder="Sets"/>
+        <input class="exreps" type="number" placeholder="Reps"/>
+        <input class="exload" type="number" placeholder="Target lb"/>
+        <button class="btn small addEx">Add</button>
+        <button class="btn small ghost dup">Duplicate session</button>
+        <button class="btn small danger del">Delete session</button>
+      </div>
+    </div>
+  `;
+
+  // 2) NOW inject the exercise dropdown into .exname-slot
+  (function attachSelect(){
+    const slot = card.querySelector('.exname-slot');
+    if (!slot) return;
+    const apply = (names)=> { slot.replaceWith(makeExerciseSelect('exname', names)); };
+    if (_exerciseNamesCache) apply(_exerciseNamesCache);
+    else getExerciseNames().then(apply).catch(()=> apply([]));
+  })();
+
+  // 3) Date picker
+  if (window.flatpickr) {
+    flatpickr(card.querySelector('.pick'), {
+      dateFormat: 'Y-m-d',
+      onChange: (sel)=> s.date = sel[0]?.toISOString().slice(0,10)
+    });
+  }
 
     const exlist = card.querySelector('.exlist');
     (s.blocks||[]).forEach(b=>{
@@ -928,6 +986,64 @@ drawer.addEventListener('click', (e) => {
   if (link) openDrawer(false);          // closes drawer + hides scrim
 });
 
+function AthleteView(){
+  const root = document.createElement('div');
+  root.innerHTML = `<h3>Athlete View</h3><div id="athList" class="list"></div>`;
+  page('Athlete View', root);
+
+  (async ()=>{
+    const listEl = root.querySelector('#athList');
+    if(!db) { listEl.innerHTML = `<div class="item">Firebase required.</div>`; return; }
+
+    try{
+      const usersSnap = await db.collection('users').limit(200).get();
+      if (usersSnap.empty){ listEl.innerHTML = `<div class="item">No users yet.</div>`; return; }
+
+      for (const u of usersSnap.docs){
+        const uid = u.id;
+        const profile = u.data() || {};
+        const name = profile.username || profile.email || uid.slice(0,6);
+
+        // assignment
+        const assign = await db.collection('assignments').doc(uid).get();
+        let assignedText = 'No program assigned';
+        let planCount = 0;
+        if(assign.exists){
+          const a = assign.data();
+          assignedText = `Assigned: ${a.trainerCode} • Week ${a.weekNumber} • Start ${a.startDate}`;
+          const weekDoc = await db.collection('programs').doc(a.trainerCode).collection('weeks').doc(String(a.weekNumber)).get();
+          planCount = weekDoc.exists ? ((weekDoc.data().sessions||[]).length) : 0;
+        }
+
+        // recent completions (past 7 days)
+        const today = new Date();
+        let completed7 = 0;
+        for(let i=0;i<7;i++){
+          const d = new Date(today); d.setDate(today.getDate()-i);
+          const key = d.toISOString().slice(0,10);
+          const sdoc = await db.collection('sessions').doc(uid).collection('days').doc(key).get();
+          if (sdoc.exists && (sdoc.data().status === 'completed')) completed7++;
+        }
+
+        const row = document.createElement('div'); row.className = 'item';
+        row.innerHTML = `
+          <div class="grow">
+            <div class="bold">${name}</div>
+            <div class="small muted">${assignedText}</div>
+            <div class="small muted">Sessions in plan: ${planCount}</div>
+            <div class="small">Completed (7d): ${completed7}</div>
+          </div>
+        `;
+        listEl.appendChild(row);
+      }
+    }catch(e){
+      console.warn(e);
+      listEl.innerHTML = `<div class="item">Error loading athletes: ${e.message}</div>`;
+    }
+  })();
+}
+
+
 
 
 // Routes
@@ -943,6 +1059,8 @@ route('/settings', Settings);
 route('/404', ()=> page('Not found', `<p class="muted">Page not found.</p>`));
 route('/unscheduled', UnscheduledSession);
 route('/unscheduled', UnscheduledSession);
+route('/athletes', AthleteView);
+
 
 
 // Auth glue

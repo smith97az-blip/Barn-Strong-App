@@ -73,13 +73,136 @@ function calcStreak(logs){
   return streak;
 }
 
-function calcAdherence(sessionsMap, logs){
-  function addDays(iso, delta){ const d = new Date(iso); d.setDate(d.getDate()+delta); return d.toISOString().slice(0,10); }
+function detectPRs(logs){
+  const best = {};
+  (logs || []).forEach(l => {
+    const score = (l.weight || 0) * (l.reps || 1);
+    const k = l.exercise || '?';
+    if (!best[k] || score > best[k]) best[k] = score;
+  });
+  return { prCount: Object.keys(best).length };
+}
+
+function rollingVolume(logs, days){
   const today = new Date().toISOString().slice(0,10);
-  function within(days){
-    const set = new Set((logs||[]).filter(h=> h.date >= addDays(today, -days)).map(h=>h.date));
+  function addDays(iso, delta){ const d = new Date(iso); d.setDate(d.getDate()+delta); return d.toISOString().slice(0,10); }
+  const start = addDays(today, -days);
+  let sum = 0;
+  (logs || []).forEach(l => {
+    if (l.date >= start && l.date <= today){
+      sum += (l.weight || 0) * (l.reps || 1) * (l.sets || 1);
+    }
+  });
+  return sum;
+}
+
+function renderVolumeChart(canvasId, logs){
+  const dayKey = d => d.toISOString().slice(0,10);
+  const labels = [], data = [];
+  for(let i=29;i>=0;i--){
+    const dt = new Date(); dt.setDate(dt.getDate()-i);
+    const key = dayKey(dt);
+    labels.push(key.slice(5));
+    const vol = (logs || [])
+      .filter(l => l.date === key)
+      .reduce((s,l) => s + (l.weight||0)*(l.reps||1)*(l.sets||1), 0);
+    data.push(vol);
+  }
+  const el = document.getElementById(canvasId);
+  if(!el || !window.Chart) return;
+  new Chart(el, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'Daily Volume', data }] },
+    options: { responsive: true, plugins: { legend: { display:false }}, scales: { y: { beginAtZero:true } } }
+  });
+}
+
+function renderRmChart(canvasId, logs){
+  // e1RM = weight * (1 + reps/30)
+  const byEx = {};
+  (logs || []).forEach(l => {
+    const name = l.exercise || '?';
+    const e1 = (l.weight || 0) * (1 + (l.reps || 1)/30);
+    (byEx[name] ||= []).push([l.date, e1]);
+  });
+  const top = Object.entries(byEx)
+    .map(([k,v]) => [k, Math.max(...v.map(x=>x[1]))])
+    .sort((a,b)=> b[1]-a[1]).slice(0,5).map(x=>x[0]);
+
+  const dates = [...new Set((logs || []).map(l => l.date))].sort();
+  const datasets = top.map(name => {
+    const series = dates.map(d => {
+      const arr = (byEx[name] || []).filter(x => x[0] === d).map(x => x[1]);
+      return arr.length ? Math.max(...arr) : null;
+    });
+    return { label: name, data: series };
+  });
+
+  const el = document.getElementById(canvasId);
+  if(!el || !window.Chart) return;
+  new Chart(el, {
+    type: 'line',
+    data: { labels: dates.map(d => d.slice(5)), datasets },
+    options: { responsive: true, plugins: { legend: { display:true }}, scales: { y: { beginAtZero:true } } }
+  });
+}
+
+function calcAdherence(sessionsMap, logs){
+  function addDays(iso, delta){
+    const d = new Date(iso);
+    d.setDate(d.getDate() + delta);
+    return d.toISOString().slice(0,10);
+  }
+  const today = new Date().toISOString().slice(0,10);
+
+  function within(windowDays){
+    const completedDates = new Set(
+      (logs || [])
+        .filter(h => h.date >= addDays(today, -windowDays) && h.date <= today)
+        .map(h => h.date)
+    );
+
     let scheduled = 0, completed = 0;
-    Object.values(sessionsMap||{}).for
+    Object.values(sessionsMap || {}).forEach(s => {
+      const d = s.date || '';
+      if (d >= addDays(today, -windowDays) && d <= today){
+        scheduled++;
+        if (completedDates.has(d)) completed++;
+      }
+    });
+
+    return scheduled ? Math.round((completed / scheduled) * 100) : 0;
+  }
+
+  return { adherence7: within(7), adherence30: within(30) };
+}
+
+function CalendarPage(){
+  const now = new Date(); const y = now.getFullYear(), m = now.getMonth();
+  const first = new Date(y, m, 1), startDow = first.getDay();
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  const el = document.createElement('div'); el.className='calendar';
+  const header = document.createElement('div'); header.className='row';
+  header.innerHTML = `<strong>${now.toLocaleString(undefined,{month:'long'})} ${y}</strong>`; el.appendChild(header);
+  const grid = document.createElement('div'); grid.className='grid';
+  ['S','M','T','W','T','F','S'].forEach(d=>{ const h=document.createElement('div'); h.className='muted small center'; h.textContent=d; grid.appendChild(h); });
+  for(let i=0;i<startDow;i++) grid.appendChild(document.createElement('div'));
+  for(let d=1; d<=daysInMonth; d++){
+    const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const cell = document.createElement('div'); cell.className='cell';
+    cell.innerHTML = `<div class="bold">${d}</div>`;
+    if(state.sessionsMap[dateStr]){
+      const dot=document.createElement('span'); dot.className='dot'; cell.appendChild(dot);
+      cell.title=state.sessionsMap[dateStr].title;
+      cell.style.cursor='pointer';
+      cell.addEventListener('click',()=> go('/today'));
+    }
+    if(dateStr===new Date().toISOString().slice(0,10)) cell.classList.add('today');
+    grid.appendChild(cell);
+  }
+  el.appendChild(grid);
+  page('Calendar', el);
+}
 
 
 // ---- Exercise Library → dropdowns ----

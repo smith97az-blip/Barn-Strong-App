@@ -986,6 +986,64 @@ drawer.addEventListener('click', (e) => {
   if (link) openDrawer(false);          // closes drawer + hides scrim
 });
 
+function AthleteView(){
+  const root = document.createElement('div');
+  root.innerHTML = `<h3>Athlete View</h3><div id="athList" class="list"></div>`;
+  page('Athlete View', root);
+
+  (async ()=>{
+    const listEl = root.querySelector('#athList');
+    if(!db) { listEl.innerHTML = `<div class="item">Firebase required.</div>`; return; }
+
+    try{
+      const usersSnap = await db.collection('users').limit(200).get();
+      if (usersSnap.empty){ listEl.innerHTML = `<div class="item">No users yet.</div>`; return; }
+
+      for (const u of usersSnap.docs){
+        const uid = u.id;
+        const profile = u.data() || {};
+        const name = profile.username || profile.email || uid.slice(0,6);
+
+        // assignment
+        const assign = await db.collection('assignments').doc(uid).get();
+        let assignedText = 'No program assigned';
+        let planCount = 0;
+        if(assign.exists){
+          const a = assign.data();
+          assignedText = `Assigned: ${a.trainerCode} • Week ${a.weekNumber} • Start ${a.startDate}`;
+          const weekDoc = await db.collection('programs').doc(a.trainerCode).collection('weeks').doc(String(a.weekNumber)).get();
+          planCount = weekDoc.exists ? ((weekDoc.data().sessions||[]).length) : 0;
+        }
+
+        // recent completions (past 7 days)
+        const today = new Date();
+        let completed7 = 0;
+        for(let i=0;i<7;i++){
+          const d = new Date(today); d.setDate(today.getDate()-i);
+          const key = d.toISOString().slice(0,10);
+          const sdoc = await db.collection('sessions').doc(uid).collection('days').doc(key).get();
+          if (sdoc.exists && (sdoc.data().status === 'completed')) completed7++;
+        }
+
+        const row = document.createElement('div'); row.className = 'item';
+        row.innerHTML = `
+          <div class="grow">
+            <div class="bold">${name}</div>
+            <div class="small muted">${assignedText}</div>
+            <div class="small muted">Sessions in plan: ${planCount}</div>
+            <div class="small">Completed (7d): ${completed7}</div>
+          </div>
+        `;
+        listEl.appendChild(row);
+      }
+    }catch(e){
+      console.warn(e);
+      listEl.innerHTML = `<div class="item">Error loading athletes: ${e.message}</div>`;
+    }
+  })();
+}
+
+
 
 
 // Routes
@@ -1001,6 +1059,8 @@ route('/settings', Settings);
 route('/404', ()=> page('Not found', `<p class="muted">Page not found.</p>`));
 route('/unscheduled', UnscheduledSession);
 route('/unscheduled', UnscheduledSession);
+route('/athletes', AthleteView);
+
 
 
 // Auth glue

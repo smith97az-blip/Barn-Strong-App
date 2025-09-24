@@ -5,6 +5,26 @@ const qsa = s => [...document.querySelectorAll(s)];
 const ls = { get(k,f){ try{return JSON.parse(localStorage.getItem(k)) ?? f}catch{return f} }, set(k,v){ localStorage.setItem(k, JSON.stringify(v)) }, rm(k){ localStorage.removeItem(k) } };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+// TEMP: seed a template into Firestore as the coach user
+window.seedTemplate = async function seedTemplate({trainerCode='BARN', templateId='fall-strength', name='Fall Strength Cycle', weeks=4, grid=[]}){
+  if (!db || !state?.user) { alert('Login required'); return; }
+  try {
+    const ref = db.collection('templates').doc(trainerCode).collection('defs').doc(templateId);
+    await ref.set({
+      name,
+      weeksPerMesocycle: weeks,
+      mesocycles: 1,
+      grid,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      createdBy: state.user.uid
+    });
+    alert(`Template "${name}" saved to templates/${trainerCode}/defs/${templateId}`);
+  } catch (e) {
+    console.error(e);
+    alert(e.message);
+  }
+};
+
 // v2.4 modal helper
 function openModal(contentHTML){
   let m = document.getElementById('modal');

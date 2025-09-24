@@ -5,6 +5,47 @@ const qsa = s => [...document.querySelectorAll(s)];
 const ls = { get(k,f){ try{return JSON.parse(localStorage.getItem(k)) ?? f}catch{return f} }, set(k,v){ localStorage.setItem(k, JSON.stringify(v)) }, rm(k){ localStorage.removeItem(k) } };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
+  // 1) Materialize template grid into programs/{code}/weeks/*
+  //    We’ll group rows by week and build sessions arrays.
+  const weeksMap = {}; // week -> sessions[]
+  (template.grid||[]).forEach(cell=>{
+    const w = cell.week;
+    if(!weeksMap[w]) weeksMap[w] = [];
+    // We create one "session" per DAY cell if it has content
+    if(cell.movement || cell.setsreps || cell.load || cell.notes){
+      weeksMap[w].push({
+        title: `${cell.day}`,
+        date: null, // left for user calendar to place relative to startDate
+        blocks: [{
+          name: cell.movement || '',
+          sets: parseInt((cell.setsreps||'').split('x')[0]||'') || null,
+          reps: parseInt((cell.setsreps||'').split('x')[1]||'') || null,
+          weight: parseFloat((cell.load||'').replace(/[^\d.]/g,'')) || null,
+          notes: cell.notes || ''
+        }]
+      });
+    }
+  });
+
+  // 2) Write weeks
+  const batch = db.batch();
+  Object.entries(weeksMap).forEach(([weekNumber, sessions])=>{
+    const ref = db.collection('programs').doc(trainerCode).collection('weeks').doc(String(weekNumber));
+    batch.set(ref, { weekNumber: Number(weekNumber), sessions }, { merge: true });
+  });
+
+  // 3) Link assignment
+  batch.set(
+    db.collection('assignments').doc(userId),
+    { trainerCode, weekNumber: 1, startDate, templateId, assignedAt: firebase.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  );
+
+  await batch.commit();
+}
+
+
 // v2.4 modal helper
 function openModal(contentHTML){
   let m = document.getElementById('modal');
@@ -995,6 +1036,69 @@ function TemplateBuilder(){
   });
 
   page('Template Builder', root);
+}
+
+function SavedTemplates(){
+  const root = document.createElement('div');
+  root.innerHTML = `
+    <h3>Saved Templates</h3>
+    <div id="tplList" class="list"></div>
+  `;
+  page('Saved Templates', root);
+
+  (async ()=>{
+    if(!db) return root.querySelector('#tplList').innerHTML = `<div class="item">Firebase required.</div>`;
+    const list = root.querySelector('#tplList');
+    const code = 'BARN'; // or read from your trainer dropdown elsewhere
+
+    try{
+      const snap = await db.collection('templates').doc(code).collection('defs').orderBy('createdAt','desc').get();
+      if (snap.empty){ list.innerHTML = `<div class="item">No templates yet.</div>`; return; }
+
+      // Preload user options
+      const usersSel = document.createElement('select'); usersSel.innerHTML = `<option value="">— select user —</option>`;
+      const users = await db.collection('users').limit(200).get();
+      users.forEach(u=> {
+        const d = u.data(); const opt = document.createElement('option');
+        opt.value = u.id; opt.textContent = d.username || d.email || u.id.slice(0,6);
+        usersSel.appendChild(opt);
+      });
+
+      snap.forEach(doc=>{
+        const t = doc.data();
+        const row = document.createElement('div'); row.className='item';
+        row.innerHTML = `
+          <div class="grow">
+            <div class="bold">${t.name}</div>
+            <div class="muted small">${t.grid?.length||0} items • Weeks: ${t.weeksPerMesocycle || '?'}</div>
+          </div>
+          <div class="row">
+            <input type="date" class="startDate" />
+            <span class="userSlot"></span>
+            <button class="btn small assignBtn">Assign to User</button>
+          </div>
+        `;
+        // clone a users select per row
+        const sel = usersSel.cloneNode(true);
+        row.querySelector('.userSlot').appendChild(sel);
+
+        row.querySelector('.assignBtn').addEventListener('click', async ()=>{
+          const uid = sel.value;
+          const start = row.querySelector('.startDate').value || new Date().toISOString().slice(0,10);
+          if(!uid) return alert('Select a user.');
+          try{
+            await assignTemplateToUser({ templateId: doc.id, template: t, trainerCode: code, userId: uid, startDate: start });
+            alert('Assigned!');
+          }catch(e){ alert(e.message); }
+        });
+
+        list.appendChild(row);
+      });
+    }catch(e){
+      console.warn(e);
+      root.querySelector('#tplList').innerHTML = `<div class="item">Error: ${e.message}</div>`;
+    }
+  })();
 }
 
 

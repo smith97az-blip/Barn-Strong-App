@@ -67,3 +67,11 @@ textarea{min-height:60px;resize:vertical}
 .modal.open { display:flex; }
 .modal .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; max-width: 680px; width: 92%; }
 
+/* spreadsheet look */
+.scroll-x { overflow-x:auto; }
+table.sheet { border-collapse:collapse; width:100%; min-width:900px; }
+table.sheet th, table.sheet td { border:1px solid var(--line); vertical-align:top; padding:8px; }
+table.sheet th { background: var(--card); text-align:left; }
+table.sheet .slot { min-height:22px; padding:4px; border-radius:6px; }
+table.sheet .slot:empty:before { content: attr(placeholder); color: var(--muted); }
+table.sheet .slot:focus { outline: 2px solid rgba(255,0,0,.25); background: rgba(255,0,0,.04); }

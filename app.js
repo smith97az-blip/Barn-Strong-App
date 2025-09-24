@@ -20,6 +20,33 @@ function openModal(contentHTML){
   m.classList.add('open');
 }
 
+// v2.5 — exercise library → dropdowns
+let _exerciseNamesCache = null;
+async function loadExerciseLibraryNames(){
+  const names = new Set((typeof DEFAULT_EXERCISES !== 'undefined' ? DEFAULT_EXERCISES : []));
+  // Pull user-added exercises if available (coach account or local)
+  try {
+    if (db && state?.user?.uid) {
+      const snap = await db.collection('users').doc(state.user.uid).collection('exercises').get();
+      snap.forEach(d => d.data()?.name && names.add(d.data().name));
+    } else {
+      (ls.get('bs_exercises', []) || []).forEach(n => names.add(n));
+    }
+  } catch(e){ console.warn('loadExerciseLibraryNames', e); }
+  return [...names].sort();
+}
+async function getExerciseNames() {
+  if (_exerciseNamesCache) return _exerciseNamesCache;
+  _exerciseNamesCache = await loadExerciseLibraryNames();
+  return _exerciseNamesCache;
+}
+function makeExerciseSelect(className='exname', options=[]){
+  const sel = document.createElement('select');
+  sel.className = className;
+  sel.innerHTML = `<option value="">— select exercise —</option>` + options.map(n=>`<option value="${n}">${n}</option>`).join('');
+  return sel;
+}
+
 // Theme install banner (kept, no analytics yet)
 let deferredPrompt; const installBtn = () => qs('#installBtn');
 window.addEventListener('beforeinstallprompt', (e)=>{ e.preventDefault(); deferredPrompt = e; installBtn() && (installBtn().hidden=false); });

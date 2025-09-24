@@ -62,6 +62,26 @@ function openModal(contentHTML){
   m.classList.add('open');
 }
 
+function calcStreak(logs){
+  const days = new Set((logs||[]).map(h=>h.date));
+  let streak=0; const today = new Date();
+  while(true){
+    const d=new Date(today); d.setDate(today.getDate()-streak);
+    const key=d.toISOString().slice(0,10);
+    if(days.has(key)) streak++; else break;
+  }
+  return streak;
+}
+
+function calcAdherence(sessionsMap, logs){
+  function addDays(iso, delta){ const d = new Date(iso); d.setDate(d.getDate()+delta); return d.toISOString().slice(0,10); }
+  const today = new Date().toISOString().slice(0,10);
+  function within(days){
+    const set = new Set((logs||[]).filter(h=> h.date >= addDays(today, -days)).map(h=>h.date));
+    let scheduled = 0, completed = 0;
+    Object.values(sessionsMap||{}).for
+
+
 // ---- Exercise Library → dropdowns ----
 let _exerciseNamesCache = null;
 async function loadExerciseLibraryNames(){
@@ -221,33 +241,39 @@ function Login(){
 
 // ---- Dashboard ----
 function Dashboard(){
-  const wrap = document.createElement('div');
-  wrap.innerHTML = `
-    <div class="grid two">
-      <div class="card">
-        <h3>Today</h3>
-        <p><a href="#/today">View today’s session</a></p>
-      </div>
-      <div class="card">
-        <h3>Calendar</h3>
-        <p><a href="#/calendar">Full calendar</a></p>
-      </div>
+  const totalSessions = new Set(state.logs.map(h=>h.date)).size;
+  const streak = calcStreak(state.logs);
+  const next = findNextSession(state.sessionsMap || {});
+  const { adherence7, adherence30 } = calcAdherence(state.sessionsMap || {}, state.logs || []);
+  const { prCount } = detectPRs(state.logs || []);
+  const volume7 = rollingVolume(state.logs || [], 7);
+
+  const el = document.createElement('div');
+  el.innerHTML = `
+    <div class="kpi">
+      <div class="tile"><div class="title">Sessions Completed</div><div class="value">${totalSessions}</div></div>
+      <div class="tile"><div class="title">Current Streak</div><div class="value">${streak} days</div></div>
+      <div class="tile"><div class="title">Next Session</div><div>${ next ? (next.date+' — '+next.title) : 'No upcoming' }</div></div>
+      <div class="tile"><div class="title">Adherence (7d)</div><div class="value">${adherence7}%</div></div>
+      <div class="tile"><div class="title">Adherence (30d)</div><div class="value">${adherence30}%</div></div>
+      <div class="tile"><div class="title">PRs Found</div><div class="value">${prCount}</div></div>
+      <div class="tile"><div class="title">Volume (7d)</div><div class="value">${volume7}</div></div>
+    </div>
+    <div class="card chart-card">
+      <h3>Training Volume (last 30 days)</h3>
+      <canvas id="volChart"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3>Estimated 1RM Trend (top 5 exercises)</h3>
+      <canvas id="rmChart"></canvas>
     </div>
   `;
-  page('Dashboard', wrap);
-}
+  page('Dashboard', el);
 
-// ---- Calendar ----
-function CalendarPage(){
-  const wrap = document.createElement('div');
-  wrap.innerHTML = `<div id="cal"></div>`;
-  const cal = wrap.querySelector('#cal');
-  Object.values(state.sessionsMap||{}).forEach(sess=>{
-    const d = document.createElement('div');
-    d.textContent = `${sess.date} — ${sess.title}`;
-    cal.appendChild(d);
-  });
-  page('Calendar', wrap);
+  setTimeout(()=> {
+    renderVolumeChart('volChart', state.logs || []);
+    renderRmChart('rmChart', state.logs || []);
+  }, 10);
 }
 
 // ---- Today's Session ----

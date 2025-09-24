@@ -688,7 +688,8 @@ function CoachPortal(){
     <div class="row mt">
       <button class="btn" id="addSession">+ Add Session</button>
       <button class="btn ghost" id="dupWeek">Duplicate Week</button>
-      <button class="btn ghost" id="addTemplate">Template Builder</button>
+      <button class="btn ghost" id="openTemplateBuilder">New Template</button>
+      <button class="btn ghost" id="openSavedTemplates">Saved Templates</button>
       <button class="btn ghost" id="athleteViewBtn">Athlete View</button>
     </div>
 
@@ -696,7 +697,9 @@ function CoachPortal(){
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
   `;
-  
+
+  root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
+  root.querySelector('#openTemplateBuilder')?.addEventListener('click', ()=> go('/template-builder'));
 root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
   
   
@@ -877,6 +880,122 @@ root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athle
   page('Coach Portal', root);
 }
 
+function TemplateBuilder(){
+  const root = document.createElement('div');
+
+  // Config for fast scaffolding
+  const DEFAULT_WEEKS = 4;
+  const DAYS = [
+    'ME Upper','DE Upper',
+    'DE Lower','ME Lower'
+  ]; // column headers (edit to taste)
+
+  // Build spreadsheet UI
+  root.innerHTML = `
+    <h3>Template Builder</h3>
+    <div class="grid two">
+      <label>Name <input id="tplName" placeholder="e.g., Fall Strength Cycle"/></label>
+      <label>Weeks <input id="tplWeeks" type="number" min="1" value="${DEFAULT_WEEKS}"/></label>
+    </div>
+
+    <div class="muted small mt">Click cells to edit. Use the exercise dropdowns in the row editor to add exercises.</div>
+    <div class="divider"></div>
+
+    <div class="scroll-x">
+      <table class="sheet" id="tplTable">
+        <thead>
+          <tr>
+            <th>Week</th>
+            ${DAYS.map(d=>`<th>${d}<div class="muted tiny">Movement / Sets×Reps / Load Rx / Notes</div></th>`).join('')}
+          </tr>
+        </thead>
+        <tbody id="tplBody"></tbody>
+      </table>
+    </div>
+
+    <div class="row mt">
+      <button id="addWeek" class="btn small">+ Add Week</button>
+      <button id="saveTemplate" class="btn">Save Template</button>
+    </div>
+
+    <div id="tplMsg" class="muted small mt"></div>
+  `;
+
+  // Render N weeks of rows
+  const body = root.querySelector('#tplBody');
+  function renderWeeks(n){
+    body.innerHTML = '';
+    for(let w=1; w<=n; w++){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="bold">Week ${w}</td>` + DAYS.map(()=>`
+        <td class="cell" data-week="${w}">
+          <div class="slot" contenteditable="true" data-field="movement" placeholder="Movement"></div>
+          <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
+          <div class="slot" contenteditable="true" data-field="load" placeholder="Load Rx"></div>
+          <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
+        </td>
+      `).join('');
+      body.appendChild(tr);
+    }
+  }
+  renderWeeks(DEFAULT_WEEKS);
+
+  // Add week
+  root.querySelector('#addWeek').addEventListener('click', ()=>{
+    const n = body.querySelectorAll('tr').length + 1;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="bold">Week ${n}</td>` + DAYS.map(()=>`
+      <td class="cell" data-week="${n}">
+        <div class="slot" contenteditable="true" data-field="movement"></div>
+        <div class="slot" contenteditable="true" data-field="setsreps"></div>
+        <div class="slot" contenteditable="true" data-field="load"></div>
+        <div class="slot" contenteditable="true" data-field="notes"></div>
+      </td>
+    `).join('');
+    body.appendChild(tr);
+  });
+
+  // Save template (coach-only write)
+  root.querySelector('#saveTemplate').addEventListener('click', async ()=>{
+    const name = root.querySelector('#tplName').value.trim() || 'Untitled';
+    const weeks = parseInt(root.querySelector('#tplWeeks').value||'4',10);
+    if(!db || !state.user) return alert('Login + Firebase required.');
+    const trainerCode = 'BARN'; // or from your dropdown if you prefer
+    const grid = [];  // serialize cells → array of {week, day, movement, setsreps, load, notes}
+
+    body.querySelectorAll('tr').forEach((tr, idx)=>{
+      const week = idx+1;
+      const cells = [...tr.querySelectorAll('td.cell')];
+      cells.forEach((td, cIdx)=>{
+        const rec = {
+          week,
+          day: DAYS[cIdx],
+          movement: td.querySelector('[data-field="movement"]')?.innerText.trim() || '',
+          setsreps: td.querySelector('[data-field="setsreps"]')?.innerText.trim() || '',
+          load:     td.querySelector('[data-field="load"]')?.innerText.trim() || '',
+          notes:    td.querySelector('[data-field="notes"]')?.innerText.trim() || ''
+        };
+        // skip completely empty cells
+        if(rec.movement || rec.setsreps || rec.load || rec.notes) grid.push(rec);
+      });
+    });
+
+    try{
+      const ref = db.collection('templates').doc(trainerCode).collection('defs').doc();
+      await ref.set({
+        name, weeksPerMesocycle: weeks, mesocycles: 1,
+        grid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: state.user.uid
+      });
+      root.querySelector('#tplMsg').textContent = `Saved "${name}" (${grid.length} items).`;
+      alert('Template saved.');
+      go('/templates');
+    }catch(e){ alert(e.message); }
+  });
+
+  page('Template Builder', root);
+}
 
 
 function Settings(){
@@ -1060,7 +1179,8 @@ route('/404', ()=> page('Not found', `<p class="muted">Page not found.</p>`));
 route('/unscheduled', UnscheduledSession);
 route('/unscheduled', UnscheduledSession);
 route('/athletes', AthleteView);
-
+route('/template-builder', TemplateBuilder);
+route('/templates', SavedTemplates);
 
 
 // Auth glue

@@ -67,3 +67,7 @@ textarea{min-height:60px;resize:vertical}
 .modal.open { display:flex; }
 .modal .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; max-width: 680px; width: 92%; }
 
+.sheet .slot[contenteditable="true"]:empty:before {
+  content: attr(placeholder);
+  color: #9aa0a6; /* muted */
+}

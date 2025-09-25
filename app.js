@@ -1118,8 +1118,11 @@ function TemplateBuilder(){
       <label>Weeks <input id="tplWeeks" type="number" min="1" value="${DEFAULT_WEEKS}"/></label>
     </div>
 
-    <div class="muted small mt">Click cells to edit. Use exercise dropdowns in the row editor to add exercises.</div>
+    <div class="muted small mt">Click a Movement cell and start typing to search your Exercise Library.</div>
     <div class="divider"></div>
+
+    <!-- Shared datalist used by all Movement inputs -->
+    <datalist id="exOptions"></datalist>
 
     <div class="scroll-x">
       <table class="sheet" id="tplTable">
@@ -1141,6 +1144,18 @@ function TemplateBuilder(){
     <div id="tplMsg" class="muted small mt"></div>
   `;
 
+  // Populate the shared datalist from the Exercise Library
+  (async ()=>{
+    try{
+      const names = await getExerciseNames(); // uses your existing helper
+      const dl = root.querySelector('#exOptions');
+      dl.innerHTML = (names || [])
+        .slice()
+        .sort((a,b)=> a.localeCompare(b, undefined, {sensitivity:'base'}))
+        .map(n => `<option value="${n}"></option>`).join('');
+    }catch(e){ console.warn('exOptions load', e); }
+  })();
+
   // Render N weeks of rows
   const body = root.querySelector('#tplBody');
   function renderWeeks(n){
@@ -1149,7 +1164,10 @@ function TemplateBuilder(){
       const tr = document.createElement('tr');
       tr.innerHTML = `<td class="bold">Week ${w}</td>` + DAYS.map(()=>`
         <td class="cell" data-week="${w}">
-          <div class="slot" contenteditable="true" data-field="movement" placeholder="Movement"></div>
+          <!-- Movement: type-ahead from datalist -->
+          <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement"/>
+
+          <!-- The rest can remain contenteditable for quick free text -->
           <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
           <div class="slot" contenteditable="true" data-field="load" placeholder="Load"></div>
           <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
@@ -1160,16 +1178,16 @@ function TemplateBuilder(){
   }
   renderWeeks(DEFAULT_WEEKS);
 
-  // Add week
+  // Add another week
   root.querySelector('#addWeek').addEventListener('click', ()=>{
     const n = body.querySelectorAll('tr').length + 1;
     const tr = document.createElement('tr');
     tr.innerHTML = `<td class="bold">Week ${n}</td>` + DAYS.map(()=>`
       <td class="cell" data-week="${n}">
-        <div class="slot" contenteditable="true" data-field="movement"></div>
-        <div class="slot" contenteditable="true" data-field="setsreps"></div>
-        <div class="slot" contenteditable="true" data-field="load"></div>
-        <div class="slot" contenteditable="true" data-field="notes"></div>
+        <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement"/>
+        <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
+        <div class="slot" contenteditable="true" data-field="load" placeholder="Load"></div>
+        <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
       </td>
     `).join('');
     body.appendChild(tr);
@@ -1180,7 +1198,7 @@ function TemplateBuilder(){
     const name = root.querySelector('#tplName').value.trim() || 'Untitled';
     const weeks = parseInt(root.querySelector('#tplWeeks').value||'4',10);
     if(!db || !state.user) return alert('Login + Firebase required.');
-    const trainerCode = 'BARN'; // change if you want the Trainer Code dropdown here
+    const trainerCode = 'BARN'; // adjust if you add a trainer code selector
     const grid = [];  // serialize cells → array of {week, day, movement, setsreps, load, notes}
 
     body.querySelectorAll('tr').forEach((tr, idx)=>{
@@ -1190,7 +1208,9 @@ function TemplateBuilder(){
         const rec = {
           week,
           day: DAYS[cIdx],
-          movement: td.querySelector('[data-field="movement"]')?.innerText.trim() || '',
+          // Movement is an <input>, use .value
+          movement: td.querySelector('[data-field="movement"]')?.value?.trim() || '',
+          // The rest are contenteditable, use .innerText
           setsreps: td.querySelector('[data-field="setsreps"]')?.innerText.trim() || '',
           load:     td.querySelector('[data-field="load"]')?.innerText.trim() || '',
           notes:    td.querySelector('[data-field="notes"]')?.innerText.trim() || ''

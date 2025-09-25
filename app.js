@@ -1330,11 +1330,12 @@ async function main(){
         await ensureExercises(); // seeds user exercise library in Firestore
       }
 
-        const unsubProfile = uref.onSnapshot(doc => {
-        state.profile = doc.data() || {};
-        render(); // update drawer + Settings values
-      });
-      (state.unsub ||= []).push(unsubProfile);
+       const unsubProfile = uref.onSnapshot(pdoc => {
+  state.profile = pdoc.data() || {};
+  // re-render things that show profile (drawer header, settings page, etc.)
+  render();
+});
+(state.unsub ||= []).push(unsubProfile);
       
       // live user data
       db.collection('users').doc(user.uid).collection('exercises')

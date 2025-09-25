@@ -60,41 +60,6 @@ async function writePlannedDaysToFirestore(uid, map){
   await batch.commit();
 }
 
-  // add form
-  const form = document.createElement('div'); 
-  form.className = 'row mt';
-  form.innerHTML = `
-    <label>New exercise 
-      <input id="exNameInline" placeholder="e.g., Bulgarian Split Squat"/>
-    </label>
-    <button id="addExInline" class="btn">Add</button>
-  `;
-
-  form.querySelector('#addExInline').addEventListener('click', async ()=>{
-    const name = form.querySelector('#exNameInline').value.trim(); 
-    if(!name) return;
-
-    if (db && state.user){
-      try{
-        await db.collection('users')
-          .doc(state.user.uid).collection('exercises')
-          .doc(slug(name)).set({ name });
-      }catch(e){
-        return alert(e.message);
-      }
-    }else{
-      const local = ls.get('bs_exercises', DEFAULT_EXERCISES);
-      if(!local.includes(name)) local.push(name);
-      ls.set('bs_exercises', local); 
-      state.exercises = local;
-    }
-  });
-
-  container.appendChild(form);
-  container.appendChild(list);
-}
-
-
 // Assign Template → User (resolved)
 async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
   // 1) Materialize template grid into programs/{trainerCode}/weeks/*

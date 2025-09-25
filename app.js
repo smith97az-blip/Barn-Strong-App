@@ -819,12 +819,6 @@ function CoachPortal(){
   root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
   
   // flatpickr on Start Date
-  setTimeout(()=> { 
-    if (window.flatpickr) { 
-      flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); 
-    }
-  }, 0);
-
   setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
 
   const sessions = [];
@@ -1132,68 +1126,6 @@ function SavedTemplates(){
           </div>
         `;
         // clone a users select per row
-        const sel = usersSel.cloneNode(true);
-        row.querySelector('.userSlot').appendChild(sel);
-
-        row.querySelector('.assignBtn').addEventListener('click', async ()=>{
-          const uid = sel.value;
-          const start = row.querySelector('.startDate').value || new Date().toISOString().slice(0,10);
-          if(!uid) return alert('Select a user.');
-          try{
-            await assignTemplateToUser({ templateId: doc.id, template: t, trainerCode: code, userId: uid, startDate: start });
-            alert('Assigned!');
-          }catch(e){ alert(e.message); }
-        });
-
-        list.appendChild(row);
-      });
-    }catch(e){
-      console.warn(e);
-      root.querySelector('#tplList').innerHTML = `<div class="item">Error: ${e.message}</div>`;
-    }
-  })();
-}
-
-// ---- Saved Templates ----
-function SavedTemplates(){
-  const root = document.createElement('div');
-  root.innerHTML = `
-    <h3>Saved Templates</h3>
-    <div id="tplList" class="list"></div>
-  `;
-  page('Saved Templates', root);
-
-  (async ()=>{
-    if(!db) return root.querySelector('#tplList').innerHTML = `<div class="item">Firebase required.</div>`;
-    const list = root.querySelector('#tplList');
-    const code = 'BARN';
-
-    try{
-      const snap = await db.collection('templates').doc(code).collection('defs').orderBy('createdAt','desc').get();
-      if (snap.empty){ list.innerHTML = `<div class="item">No templates yet.</div>`; return; }
-
-      const usersSel = document.createElement('select'); usersSel.innerHTML = `<option value="">— select user —</option>`;
-      const users = await db.collection('users').limit(200).get();
-      users.forEach(u=> {
-        const d = u.data(); const opt = document.createElement('option');
-        opt.value = u.id; opt.textContent = d.username || d.email || u.id.slice(0,6);
-        usersSel.appendChild(opt);
-      });
-
-      snap.forEach(doc=>{
-        const t = doc.data();
-        const row = document.createElement('div'); row.className='item';
-        row.innerHTML = `
-          <div class="grow">
-            <div class="bold">${t.name}</div>
-            <div class="muted small">${t.grid?.length||0} items • Weeks: ${t.weeksPerMesocycle || '?'}</div>
-          </div>
-          <div class="row">
-            <input type="date" class="startDate" />
-            <span class="userSlot"></span>
-            <button class="btn small assignBtn">Assign</button>
-          </div>
-        `;
         const sel = usersSel.cloneNode(true);
         row.querySelector('.userSlot').appendChild(sel);
 

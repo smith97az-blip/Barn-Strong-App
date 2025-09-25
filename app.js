@@ -13,6 +13,34 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+async function deleteExerciseByName(name){
+  if (!name) return;
+  // Confirm UX
+  if (!confirm(`Delete "${name}" from your exercise library?`)) return;
+
+  if (db && state?.user?.uid){
+    // Firestore path: users/{uid}/exercises/{slug}
+    const id = slug(name);
+    try {
+      await db.collection('users')
+        .doc(state.user.uid)
+        .collection('exercises')
+        .doc(id)
+        .delete();
+      // state.exercises is driven by onSnapshot, so it will refresh automatically
+    } catch(e){
+      alert(e.message || 'Failed to delete');
+    }
+  } else {
+    // Local storage fallback
+    const list = ls.get('bs_exercises', []);
+    const next = list.filter(n => n !== name);
+    ls.set('bs_exercises', next);
+    state.exercises = next;
+  }
+}
+
+
 function addDaysISO(iso, n){
   const d = new Date(iso);
   d.setDate(d.getDate() + n);
@@ -769,36 +797,53 @@ function ExerciseLibrary(){
   list.className = 'list';
   list.innerHTML = `<li class="item"><div class="muted">Loading…</div></li>`;
 
-  // render helper
   function renderList(names){
-  list.innerHTML = '';
-  const arr = (names || [])
-    .slice()
-    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-  
-  if (!arr.length) {
-    list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
-    return;
-  }
-  arr.forEach(name=>{
-    const li = document.createElement('li');
-    li.className = 'item';
-    li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">Use Variation Record to add history</div></div>`;
-    list.appendChild(li);
-  });
-}
+    list.innerHTML = '';
 
+    const arr = (names || [])
+      .slice()
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    if (!arr.length){
+      list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
+      return;
+    }
+
+    arr.forEach(name=>{
+      const li = document.createElement('li');
+      li.className = 'item';
+      li.innerHTML = `
+        <div class="grow">
+          <div class="bold">${name}</div>
+          <div class="muted small">Use Variation Record to add history</div>
+        </div>
+        <div class="row">
+          <button class="btn small danger del-ex" data-name="${name}">Delete</button>
+        </div>
+      `;
+      list.appendChild(li);
+    });
+
+    // Wire up delete buttons
+    list.querySelectorAll('.del-ex').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const name = btn.getAttribute('data-name');
+        await deleteExerciseByName(name);
+        // cache-bust and reload
+        _exerciseNamesCache = null;
+        const fresh = db && state?.user?.uid ? await getExerciseNames() : (state.exercises || []);
+        renderList(fresh);
+      });
+    });
+  }
 
   // load full library (DEFAULT_EXERCISES + user exercises)
   getExerciseNames()
     .then(names => {
-      // keep state.exercises in sync (optional)
-      state.exercises = names;
+      state.exercises = names; // keep in sync
       renderList(names);
     })
-    .catch(() => {
-      renderList([]); // fail-safe
-    });
+    .catch(() => renderList([]));
 
   // add handler
   form.querySelector('#addEx').addEventListener('click', async ()=>{
@@ -816,11 +861,12 @@ function ExerciseLibrary(){
         const local = ls.get('bs_exercises', DEFAULT_EXERCISES);
         if (!local.includes(name)) local.push(name);
         ls.set('bs_exercises', local);
+        state.exercises = local;
       }
-      // refresh names from source-of-truth helper
-      const names = await getExerciseNames(); // note: this returns cached list
-      // refresh the cache to include the new item immediately
-      if (Array.isArray(names) && !names.includes(name)) names.push(name);
+
+      // cache-bust and reload fresh names
+      _exerciseNamesCache = null;
+      const names = await getExerciseNames();
       renderList(names);
       form.querySelector('#exName').value = '';
     } catch(e){

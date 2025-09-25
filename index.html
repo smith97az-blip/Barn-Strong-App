@@ -19,8 +19,7 @@
 
 
 <!-- add ?v=... so new deploys bypass old cache -->
-<script defer src="firebase-config.js?v=v2.3.2"></script>
-<script defer src="app.js?v=v2.3.2"></script>
+<script defer src="firebase-config.js?v=2.6.7"></script>
 
     <script>
       if ('serviceWorker' in navigator) {
@@ -69,8 +68,11 @@
 
   <main id="root" class="container"></main>
 
-  <footer class="foot">
-    <small>&copy; 2025 Barn Strong. PWA v2.2 (optimized).</small>
+   <footer class="foot">
+    <small>&copy; 2025 Barn Strong. PWA v2.6.7.</small>
   </footer>
+
+  <!-- Load ONLY ONE app.js; defer so it runs after parsing and after other deferred libs -->
+  <script defer src="app.js?v=2.6.7"></script>
 </body>
 </html>

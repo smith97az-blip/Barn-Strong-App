@@ -11,36 +11,50 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
-// Assign Template → User
+// Assign Template → User (resolved)
 async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
-  const weeksMap = {};
-  (template.grid||[]).forEach(cell=>{
-    const w = cell.week;
-    if(!weeksMap[w]) weeksMap[w] = [];
-    if(cell.movement || cell.setsreps || cell.load || cell.notes){
+  // 1) Materialize template grid into programs/{trainerCode}/weeks/*
+  //    Group rows by week and build sessions arrays.
+  const weeksMap = {}; // week -> sessions[]
+
+  (template.grid || []).forEach(cell => {
+    const w = Number(cell.week);
+    if (!weeksMap[w]) weeksMap[w] = [];
+
+    // One "session" per day cell if it has content
+    if (cell.movement || cell.setsreps || cell.load || cell.notes) {
       weeksMap[w].push({
         title: `${cell.day}`,
-        date: null,
+        date: null, // left null; UI can place relative to assignment startDate
         blocks: [{
-          name: cell.movement || '',
-          sets: parseInt((cell.setsreps||'').split('x')[0]||'') || null,
-          reps: parseInt((cell.setsreps||'').split('x')[1]||'') || null,
-          weight: parseFloat((cell.load||'').replace(/[^\d.]/g,'')) || null,
-          notes: cell.notes || ''
+          name:   cell.movement || '',
+          sets:   parseInt((cell.setsreps || '').split('x')[0] || '') || null,
+          reps:   parseInt((cell.setsreps || '').split('x')[1] || '') || null,
+          weight: parseFloat((cell.load || '').replace(/[^\d.]/g, '')) || null,
+          notes:  cell.notes || ''
         }]
       });
     }
   });
 
+  // 2) Write weeks
   const batch = db.batch();
-  Object.entries(weeksMap).forEach(([weekNumber, sessions])=>{
-    const ref = db.collection('programs').doc(trainerCode).collection('weeks').doc(String(weekNumber));
+  Object.entries(weeksMap).forEach(([weekNumber, sessions]) => {
+    const ref = db.collection('programs')
+      .doc(trainerCode).collection('weeks').doc(String(weekNumber));
     batch.set(ref, { weekNumber: Number(weekNumber), sessions }, { merge: true });
   });
 
+  // 3) Link assignment to the user
   batch.set(
     db.collection('assignments').doc(userId),
-    { trainerCode, weekNumber: 1, startDate, templateId, assignedAt: firebase.firestore.FieldValue.serverTimestamp() },
+    {
+      trainerCode,
+      weekNumber: 1,
+      startDate,
+      templateId,
+      assignedAt: firebase.firestore.FieldValue.serverTimestamp()
+    },
     { merge: true }
   );
 
@@ -761,6 +775,13 @@ function CoachPortal(){
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
   root.querySelector('#openTemplateBuilder')?.addEventListener('click', ()=> go('/template-builder'));
   root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
+  
+  // flatpickr on Start Date
+  setTimeout(()=> { 
+    if (window.flatpickr) { 
+      flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); 
+    }
+  }, 0);
 
   setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
 
@@ -951,6 +972,7 @@ function TemplateBuilder(){
     <div id="tplMsg" class="muted small mt"></div>
   `;
 
+  // Render N weeks of rows
   const body = root.querySelector('#tplBody');
   function renderWeeks(n){
     body.innerHTML = '';
@@ -969,6 +991,7 @@ function TemplateBuilder(){
   }
   renderWeeks(DEFAULT_WEEKS);
 
+  // Add week
   root.querySelector('#addWeek').addEventListener('click', ()=>{
     const n = body.querySelectorAll('tr').length + 1;
     const tr = document.createElement('tr');
@@ -983,12 +1006,13 @@ function TemplateBuilder(){
     body.appendChild(tr);
   });
 
+  // Save template (coach-only write)
   root.querySelector('#saveTemplate').addEventListener('click', async ()=>{
     const name = root.querySelector('#tplName').value.trim() || 'Untitled';
     const weeks = parseInt(root.querySelector('#tplWeeks').value||'4',10);
     if(!db || !state.user) return alert('Login + Firebase required.');
-    const trainerCode = 'BARN';
-    const grid = [];
+    const trainerCode = 'BARN'; // change if you want the Trainer Code dropdown here
+    const grid = [];  // serialize cells → array of {week, day, movement, setsreps, load, notes}
 
     body.querySelectorAll('tr').forEach((tr, idx)=>{
       const week = idx+1;
@@ -1002,6 +1026,7 @@ function TemplateBuilder(){
           load:     td.querySelector('[data-field="load"]')?.innerText.trim() || '',
           notes:    td.querySelector('[data-field="notes"]')?.innerText.trim() || ''
         };
+        // skip completely empty cells
         if(rec.movement || rec.setsreps || rec.load || rec.notes) grid.push(rec);
       });
     });
@@ -1021,6 +1046,70 @@ function TemplateBuilder(){
   });
 
   page('Template Builder', root);
+}
+
+// ---- Saved Templates ----
+function SavedTemplates(){
+  const root = document.createElement('div');
+  root.innerHTML = `
+    <h3>Saved Templates</h3>
+    <div id="tplList" class="list"></div>
+  `;
+  page('Saved Templates', root);
+
+  (async ()=>{
+    if(!db) return root.querySelector('#tplList').innerHTML = `<div class="item">Firebase required.</div>`;
+    const list = root.querySelector('#tplList');
+    const code = 'BARN'; // or read from your Trainer Code selector
+
+    try{
+      const snap = await db.collection('templates').doc(code).collection('defs').orderBy('createdAt','desc').get();
+      if (snap.empty){ list.innerHTML = `<div class="item">No templates yet.</div>`; return; }
+
+      // Preload user options
+      const usersSel = document.createElement('select'); usersSel.innerHTML = `<option value="">— select user —</option>`;
+      const users = await db.collection('users').limit(200).get();
+      users.forEach(u=> {
+        const d = u.data(); const opt = document.createElement('option');
+        opt.value = u.id; opt.textContent = d.username || d.email || u.id.slice(0,6);
+        usersSel.appendChild(opt);
+      });
+
+      snap.forEach(doc=>{
+        const t = doc.data();
+        const row = document.createElement('div'); row.className='item';
+        row.innerHTML = `
+          <div class="grow">
+            <div class="bold">${t.name}</div>
+            <div class="muted small">${t.grid?.length||0} items • Weeks: ${t.weeksPerMesocycle || '?'}</div>
+          </div>
+          <div class="row">
+            <input type="date" class="startDate" />
+            <span class="userSlot"></span>
+            <button class="btn small assignBtn">Assign</button>
+          </div>
+        `;
+        // clone a users select per row
+        const sel = usersSel.cloneNode(true);
+        row.querySelector('.userSlot').appendChild(sel);
+
+        row.querySelector('.assignBtn').addEventListener('click', async ()=>{
+          const uid = sel.value;
+          const start = row.querySelector('.startDate').value || new Date().toISOString().slice(0,10);
+          if(!uid) return alert('Select a user.');
+          try{
+            await assignTemplateToUser({ templateId: doc.id, template: t, trainerCode: code, userId: uid, startDate: start });
+            alert('Assigned!');
+          }catch(e){ alert(e.message); }
+        });
+
+        list.appendChild(row);
+      });
+    }catch(e){
+      console.warn(e);
+      root.querySelector('#tplList').innerHTML = `<div class="item">Error: ${e.message}</div>`;
+    }
+  })();
 }
 
 // ---- Saved Templates ----

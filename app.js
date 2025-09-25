@@ -1304,7 +1304,7 @@ route('/calendar', CalendarPage);
 route('/today', TodaysSession);
 route('/variations', VariationRecord);
 route('/program', ProgramView);
-route('/exercises', () => go('/coach'));
+route('/exercises', ExerciseLibrary);
 route('/coach', CoachPortal);
 route('/settings', Settings);
 route('/404', ()=> page('Not found', `<p class="muted">Page not found.</p>`));

@@ -753,31 +753,77 @@ function ProgramView(){
   page('Program View', ul);
 }
 
-// ---- Exercise Library ----
+// ---- Exercise Library (shows ALL known exercises) ----
 function ExerciseLibrary(){
   const root = document.createElement('div');
-  const list = document.createElement('ul'); list.className='list';
-  const arr = (state.exercises||[]).slice().sort();
-  if(!arr.length){ list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`; }
-  arr.forEach(name=>{
-    const li = document.createElement('li'); li.className='item';
-    li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">Use Variation Record to add history</div></div>`;
-    list.appendChild(li);
-  });
-  const form = document.createElement('div'); form.className='row mt';
-  form.innerHTML = `<label>New exercise <input id="exName" placeholder="e.g., Bulgarian Split Squat"/></label><button id="addEx" class="btn">Add</button>`;
-  form.querySelector('#addEx').addEventListener('click', async()=>{
-    const name = form.querySelector('#exName').value.trim(); if(!name) return;
-    if(db && state.user){
-      try{ await db.collection('users').doc(state.user.uid).collection('exercises').doc(slug(name)).set({ name }); }
-      catch(e){ return alert(e.message); }
-    }else{
-      const local = ls.get('bs_exercises', DEFAULT_EXERCISES);
-      if(!local.includes(name)) local.push(name);
-      ls.set('bs_exercises', local); state.exercises = local;
+
+  // header + add form
+  const form = document.createElement('div'); 
+  form.className = 'row mt';
+  form.innerHTML = `
+    <label>New exercise <input id="exName" placeholder="e.g., Bulgarian Split Squat"/></label>
+    <button id="addEx" class="btn">Add</button>
+  `;
+
+  const list = document.createElement('ul');
+  list.className = 'list';
+  list.innerHTML = `<li class="item"><div class="muted">Loading…</div></li>`;
+
+  // render helper
+  function renderList(names){
+    list.innerHTML = '';
+    const arr = (names || []).slice().sort();
+    if (!arr.length) {
+      list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
+      return;
     }
-    location.hash = '#/exercises';
+    arr.forEach(name=>{
+      const li = document.createElement('li');
+      li.className = 'item';
+      li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">Use Variation Record to add history</div></div>`;
+      list.appendChild(li);
+    });
+  }
+
+  // load full library (DEFAULT_EXERCISES + user exercises)
+  getExerciseNames()
+    .then(names => {
+      // keep state.exercises in sync (optional)
+      state.exercises = names;
+      renderList(names);
+    })
+    .catch(() => {
+      renderList([]); // fail-safe
+    });
+
+  // add handler
+  form.querySelector('#addEx').addEventListener('click', async ()=>{
+    const name = form.querySelector('#exName').value.trim();
+    if (!name) return;
+
+    try {
+      if (db && state.user) {
+        await db.collection('users')
+          .doc(state.user.uid)
+          .collection('exercises')
+          .doc(slug(name))
+          .set({ name });
+      } else {
+        const local = ls.get('bs_exercises', DEFAULT_EXERCISES);
+        if (!local.includes(name)) local.push(name);
+        ls.set('bs_exercises', local);
+      }
+      // refresh names from source-of-truth helper
+      const names = await getExerciseNames(); // note: this returns cached list
+      // refresh the cache to include the new item immediately
+      if (Array.isArray(names) && !names.includes(name)) names.push(name);
+      renderList(names);
+      form.querySelector('#exName').value = '';
+    } catch(e){
+      alert(e.message);
+    }
   });
+
   page('Exercise Library', [form, list]);
 }
 

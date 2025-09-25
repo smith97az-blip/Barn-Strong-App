@@ -1,4 +1,4 @@
-console.log('Barn Strong build v2.6.7 @ ' + new Date().toISOString());
+console.log('Barn Strong build v3.1.2 @ ' + new Date().toISOString());
 window.__BUILD_ID__ = 'v2.6.7';
 // ========================================
 
@@ -12,6 +12,58 @@ const ls = {
   rm(k){ localStorage.removeItem(k) }
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+
+// ---- Toast helper ----
+function showToast(msg){
+  let t = document.getElementById('toast');
+  if (!t){
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.style.position = 'fixed';
+    t.style.bottom = '20px';
+    t.style.left = '50%';
+    t.style.transform = 'translateX(-50%)';
+    t.style.background = '#333';
+    t.style.color = '#fff';
+    t.style.padding = '8px 16px';
+    t.style.borderRadius = '6px';
+    t.style.zIndex = 9999;
+    t.style.transition = 'opacity 0.5s ease';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = '1';
+  setTimeout(()=>{ t.style.opacity = '0'; }, 2000);
+}
+
+
+async function deleteExerciseByName(name){
+  if (!name) return;
+  // Confirm UX
+  if (!confirm(`Delete "${name}" from your exercise library?`)) return;
+
+  if (db && state?.user?.uid){
+    // Firestore path: users/{uid}/exercises/{slug}
+    const id = slug(name);
+    try {
+      await db.collection('users')
+        .doc(state.user.uid)
+        .collection('exercises')
+        .doc(id)
+        .delete();
+      // state.exercises is driven by onSnapshot, so it will refresh automatically
+    } catch(e){
+      alert(e.message || 'Failed to delete');
+    }
+  } else {
+    // Local storage fallback
+    const list = ls.get('bs_exercises', []);
+    const next = list.filter(n => n !== name);
+    ls.set('bs_exercises', next);
+    state.exercises = next;
+  }
+}
+
 
 function addDaysISO(iso, n){
   const d = new Date(iso);
@@ -59,7 +111,6 @@ async function writePlannedDaysToFirestore(uid, map){
   });
   await batch.commit();
 }
-
 
 // Assign Template → User (resolved)
 async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
@@ -754,33 +805,110 @@ function ProgramView(){
   page('Program View', ul);
 }
 
-// ---- Exercise Library ----
+// ---- Exercise Library (shows ALL known exercises) ----
 function ExerciseLibrary(){
   const root = document.createElement('div');
-  const list = document.createElement('ul'); list.className='list';
-  const arr = (state.exercises||[]).slice().sort();
-  if(!arr.length){ list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`; }
-  arr.forEach(name=>{
-    const li = document.createElement('li'); li.className='item';
-    li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">Use Variation Record to add history</div></div>`;
-    list.appendChild(li);
-  });
-  const form = document.createElement('div'); form.className='row mt';
-  form.innerHTML = `<label>New exercise <input id="exName" placeholder="e.g., Bulgarian Split Squat"/></label><button id="addEx" class="btn">Add</button>`;
-  form.querySelector('#addEx').addEventListener('click', async()=>{
-    const name = form.querySelector('#exName').value.trim(); if(!name) return;
-    if(db && state.user){
-      try{ await db.collection('users').doc(state.user.uid).collection('exercises').doc(slug(name)).set({ name }); }
-      catch(e){ return alert(e.message); }
-    }else{
-      const local = ls.get('bs_exercises', DEFAULT_EXERCISES);
-      if(!local.includes(name)) local.push(name);
-      ls.set('bs_exercises', local); state.exercises = local;
+
+  // header + add form
+  const form = document.createElement('div'); 
+  form.className = 'row mt';
+  form.innerHTML = `
+    <label>New exercise <input id="exName" placeholder="e.g., Bulgarian Split Squat"/></label>
+    <button id="addEx" class="btn">Add</button>
+  `;
+
+  const list = document.createElement('ul');
+  list.className = 'list';
+  list.innerHTML = `<li class="item"><div class="muted">Loading…</div></li>`;
+
+  function renderList(names){
+    list.innerHTML = '';
+
+    const arr = (names || [])
+      .slice()
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    if (!arr.length){
+      list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
+      return;
     }
-    location.hash = '#/exercises';
+
+    arr.forEach(name=>{
+      const li = document.createElement('li');
+      li.className = 'item';
+      li.innerHTML = `
+        <div class="grow">
+          <div class="bold">${name}</div>
+          <div class="muted small">Use Variation Record to add history</div>
+        </div>
+        <div class="row">
+          <button class="btn small danger del-ex" data-name="${name}">Delete</button>
+        </div>
+      `;
+      list.appendChild(li);
+    });
+
+    // Wire up delete buttons (fixed try/catch + braces)
+    list.querySelectorAll('.del-ex').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const name = btn.getAttribute('data-name');
+        try{
+          await deleteExerciseByName(name);
+          // cache-bust and reload
+          _exerciseNamesCache = null;
+          const fresh = db && state?.user?.uid ? await getExerciseNames() : (state.exercises || []);
+          renderList(fresh);
+          showToast(`Exercise "${name}" deleted`);
+        }catch(e){
+          alert(e.message);
+        }
+      });
+    });
+  }
+
+  // load full library (DEFAULT_EXERCISES + user exercises)
+  getExerciseNames()
+    .then(names => {
+      state.exercises = names; // keep in sync
+      renderList(names);
+    })
+    .catch(() => renderList([]));
+
+  // add handler
+  form.querySelector('#addEx').addEventListener('click', async ()=>{
+    const name = form.querySelector('#exName').value.trim();
+    if (!name) return;
+
+    try {
+      if (db && state.user) {
+        await db.collection('users')
+          .doc(state.user.uid)
+          .collection('exercises')
+          .doc(slug(name))
+          .set({ name });
+      } else {
+        const local = ls.get('bs_exercises', DEFAULT_EXERCISES) || [];
+        if (!local.includes(name)) local.push(name);
+        ls.set('bs_exercises', local);
+        state.exercises = local;
+      }
+
+      // cache-bust and reload fresh names
+      _exerciseNamesCache = null;
+      const names = await getExerciseNames();
+      renderList(names);
+      form.querySelector('#exName').value = '';
+
+      // success toast
+      showToast(`Exercise "${name}" added successfully ✅`);
+    } catch(e){
+      alert(e.message);
+    }
   });
+
   page('Exercise Library', [form, list]);
 }
+
 
 // ---- Coach Portal ----
 function CoachPortal(){
@@ -809,6 +937,7 @@ function CoachPortal(){
       <button class="btn ghost" id="openTemplateBuilder">New Template</button>
       <button class="btn ghost" id="openSavedTemplates">Saved Templates</button>
       <button class="btn ghost" id="athleteViewBtn">Athlete View</button>
+      <button class="btn ghost" id="exerciseLibBtn">Exercise Library</button>
     </div>
 
     <div class="divider"></div>
@@ -819,6 +948,8 @@ function CoachPortal(){
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
   root.querySelector('#openTemplateBuilder')?.addEventListener('click', ()=> go('/template-builder'));
   root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
+  root.querySelector('#exerciseLibBtn').addEventListener('click', () => go('/exercises'));
+
   
   // flatpickr on Start Date
   setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
@@ -1330,15 +1461,19 @@ async function main(){
         await ensureExercises(); // seeds user exercise library in Firestore
       }
 
-        const unsubProfile = uref.onSnapshot(doc => {
-        state.profile = doc.data() || {};
-        render(); // update drawer + Settings values
-      });
-      (state.unsub ||= []).push(unsubProfile);
+       const unsubProfile = uref.onSnapshot(pdoc => {
+  state.profile = pdoc.data() || {};
+  // re-render things that show profile (drawer header, settings page, etc.)
+  render();
+});
+(state.unsub ||= []).push(unsubProfile);
       
       // live user data
       db.collection('users').doc(user.uid).collection('exercises')
-        .onSnapshot(s=>{ state.exercises = s.docs.map(d=> d.data().name).sort(); });
+  .onSnapshot(s=>{ 
+    state.exercises = s.docs.map(d=> d.data().name).sort();
+    if (location.hash === '#/coach') render();
+  });
 
       db.collection('logs').doc(user.uid).collection('entries')
         .orderBy('date','desc').limit(300)

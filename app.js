@@ -11,6 +11,54 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+function addDaysISO(iso, n){
+  const d = new Date(iso);
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0,10);
+}
+
+// Build a { [date]: { title, blocks, status } } map from a week + startDate
+function planSessionsToDates(sessions = [], startDate){
+  const map = {};
+  if (!sessions.length) return map;
+  let idx = 0;
+
+  sessions.forEach((s) => {
+    // If coach set an explicit date, use it; otherwise lay out sequentially from startDate
+    const date =
+      (s.date && /^\d{4}-\d{2}-\d{2}$/.test(s.date)) ? s.date
+      : (startDate ? addDaysISO(startDate, idx) : null);
+
+    if (!date) return;          // skip if we truly have no date anchor
+    map[date] = {
+      title: s.title || `Session ${idx+1}`,
+      blocks: s.blocks || [],
+      status: 'planned'
+    };
+    idx++;
+  });
+
+  return map;
+}
+
+// Optional: persist the planned days to Firestore for the signed-in user so
+// other parts of the app (and your rules) can read them as “planned” days.
+async function writePlannedDaysToFirestore(uid, map){
+  if (!db || !uid) return;
+  const batch = db.batch();
+  const base = db.collection('sessions').doc(uid).collection('days');
+  Object.entries(map).forEach(([date, s])=>{
+    batch.set(base.doc(date), {
+      title: s.title,
+      blocks: s.blocks,
+      status: s.status || 'planned',
+      plannedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  });
+  await batch.commit();
+}
+
+
 // Assign Template → User (resolved)
 async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
   // 1) Materialize template grid into programs/{trainerCode}/weeks/*
@@ -677,38 +725,32 @@ function VariationRecord(){
   page('Variation Record', root);
 }
 
-// ---- Program View ----
 function ProgramView(){
-  const root = document.createElement('div');
+  const el = document.createElement('div');
+  const sessions = state.program || [];
 
-  if(!state.program || !state.program.length){
-    root.innerHTML = `<p class="muted">No program published yet.</p>`;
-    return page('Program View', root);
+  if (!sessions.length){
+    el.innerHTML = `<p class="muted">No program published yet.</p>`;
+    return page('Program View', el);
   }
 
-  const list = document.createElement('ul'); list.className = 'list';
-  const weeks = state.program.slice().sort((a,b)=>
-    (Number(a.weekNumber)||0) - (Number(b.weekNumber)||0)
-  );
-
-  weeks.forEach(w=>{
+  const ul = document.createElement('ul'); ul.className = 'list';
+  sessions.forEach((s, i)=>{
+    const dateStr = Object.entries(state.sessionsMap).find(([,v]) => v.title === (s.title||`Session ${i+1}`))?.[0] || (s.date || '—');
     const li = document.createElement('li'); li.className = 'item';
-    const sessions = w.sessions || [];
-    const inner = sessions.map((s, i) => {
-      const d = s.date || '—';
-      const t = s.title || `Session ${i+1}`;
-      return `<div class="row small"><div class="bold">${t}</div><div class="muted">${d}</div></div>`;
-    }).join('');
-    li.innerHTML = `<div class="grow">
-      <div class="bold">Week ${w.weekNumber ?? '—'}</div>
-      <div class="mt small">${inner || 'No sessions in this week.'}</div>
-    </div>`;
-    list.appendChild(li);
+    const ex = (s.blocks || []).map(b => `${b.name} — ${b.sets||1} x ${b.reps??'—'}${b.weight? ` @ ${b.weight} lb`:''}`).join('<br/>') || '<span class="muted">No blocks</span>';
+    li.innerHTML = `
+      <div class="grow">
+        <div class="bold">${s.title || `Session ${i+1}`}</div>
+        <div class="small muted">${dateStr}</div>
+        <div class="mt small">${ex}</div>
+      </div>
+    `;
+    ul.appendChild(li);
   });
 
-  page('Program View', list);
+  page('Program View', ul);
 }
-
 
 // ---- Exercise Library ----
 function ExerciseLibrary(){
@@ -1342,6 +1384,7 @@ async function main(){
     auth.onAuthStateChanged(async(user)=>{
       state.user = user;
       if(!user){ return go('/login'); }
+
       const uref = db.collection('users').doc(user.uid);
       const snap = await uref.get();
       if(!snap.exists){
@@ -1350,17 +1393,61 @@ async function main(){
           goal:'', trainerCode:'BARN',
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
-        await ensureExercises();
+        await ensureExercises(); // seeds user exercise library in Firestore
       }
-      
+
+      // live user data
       db.collection('users').doc(user.uid).collection('exercises')
         .onSnapshot(s=>{ state.exercises = s.docs.map(d=> d.data().name).sort(); });
+
       db.collection('logs').doc(user.uid).collection('entries')
         .orderBy('date','desc').limit(300)
         .onSnapshot(s=>{ state.logs = s.docs.map(d=> d.data()); });
 
-      attachProgramSync(user.uid);
-      
+      // NEW: hydrate program → sessionsMap when an assignment exists
+      db.collection('assignments').doc(user.uid).onSnapshot(async (snap)=>{
+        if (!snap.exists){
+          state.sessionsMap = {};
+          state.program = [];
+          render();
+          return;
+        }
+
+        const a = snap.data(); // {trainerCode, weekNumber, startDate}
+        if(!a?.trainerCode || !a?.weekNumber){
+          state.sessionsMap = {};
+          state.program = [];
+          render();
+          return;
+        }
+
+        try{
+          const weekDoc = await db
+            .collection('programs').doc(a.trainerCode)
+            .collection('weeks').doc(String(a.weekNumber)).get();
+
+          const sessions = weekDoc.exists ? (weekDoc.data().sessions || []) : [];
+
+          // If startDate is missing and sessions have no explicit dates,
+          // we can default to today so users still see a plan.
+          const anchor = a.startDate || new Date().toISOString().slice(0,10);
+
+          const map = planSessionsToDates(sessions, anchor);
+
+          state.program = sessions;
+          state.sessionsMap = map;
+
+          // Optional but recommended: persist planned days so they are visible under sessions/{uid}/days/*
+          await writePlannedDaysToFirestore(user.uid, map);
+
+          render();
+        } catch(err){
+          console.warn('assignment -> program hydrate error', err);
+        }
+      });
+
+      // NOTE: removed attachProgramSync(user.uid); (not defined)
+
       go('/dashboard');
     });
   }else{
@@ -1372,6 +1459,7 @@ async function main(){
   render();
   setTimeout(setNetBanner, 500);
 }
+
 
 function render(){
   const path = location.hash.replace('#','') || '/login';

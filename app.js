@@ -60,6 +60,65 @@ async function writePlannedDaysToFirestore(uid, map){
   await batch.commit();
 }
 
+function renderExerciseLibraryInline(container){
+  container.innerHTML = '';
+
+  // list
+  const list = document.createElement('ul');
+  list.className = 'list';
+  const arr = (state.exercises || []).slice().sort();
+
+  if (!arr.length){
+    list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
+  } else {
+    arr.forEach(name=>{
+      const li = document.createElement('li'); 
+      li.className = 'item';
+      li.innerHTML = `
+        <div class="grow">
+          <div class="bold">${name}</div>
+          <div class="muted small">Available in dropdowns across the app</div>
+        </div>`;
+      list.appendChild(li);
+    });
+  }
+
+  // add form
+  const form = document.createElement('div'); 
+  form.className = 'row mt';
+  form.innerHTML = `
+    <label>New exercise 
+      <input id="exNameInline" placeholder="e.g., Bulgarian Split Squat"/>
+    </label>
+    <button id="addExInline" class="btn">Add</button>
+  `;
+
+  form.querySelector('#addExInline').addEventListener('click', async ()=>{
+    const name = form.querySelector('#exNameInline').value.trim(); 
+    if(!name) return;
+
+    if (db && state.user){
+      try{
+        await db.collection('users')
+          .doc(state.user.uid).collection('exercises')
+          .doc(slug(name)).set({ name });
+      }catch(e){
+        return alert(e.message);
+      }
+    }else{
+      const local = ls.get('bs_exercises', DEFAULT_EXERCISES);
+      if(!local.includes(name)) local.push(name);
+      ls.set('bs_exercises', local); 
+      state.exercises = local;
+    }
+    // quick refresh of this section
+    renderExerciseLibraryInline(container);
+  });
+
+  container.appendChild(form);
+  container.appendChild(list);
+}
+
 
 // Assign Template → User (resolved)
 async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
@@ -814,6 +873,9 @@ function CoachPortal(){
     <div class="divider"></div>
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
+    <div class="divider"></div>
+<h3>Exercise Library</h3>
+<div id="exLib"></div>
   `;
 
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
@@ -971,6 +1033,7 @@ function CoachPortal(){
   }
 
   populateLookups();
+  renderExerciseLibraryInline(root.querySelector('#exLib'));
   page('Coach Portal', root);
 }
 
@@ -1302,7 +1365,7 @@ route('/calendar', CalendarPage);
 route('/today', TodaysSession);
 route('/variations', VariationRecord);
 route('/program', ProgramView);
-route('/exercises', ExerciseLibrary);
+route('/exercises', () => go('/coach'));
 route('/coach', CoachPortal);
 route('/settings', Settings);
 route('/404', ()=> page('Not found', `<p class="muted">Page not found.</p>`));
@@ -1339,7 +1402,10 @@ async function main(){
       
       // live user data
       db.collection('users').doc(user.uid).collection('exercises')
-        .onSnapshot(s=>{ state.exercises = s.docs.map(d=> d.data().name).sort(); });
+  .onSnapshot(s=>{ 
+    state.exercises = s.docs.map(d=> d.data().name).sort();
+    if (location.hash === '#/coach') render();
+  });
 
       db.collection('logs').doc(user.uid).collection('entries')
         .orderBy('date','desc').limit(300)

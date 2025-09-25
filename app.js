@@ -918,8 +918,10 @@ function CoachPortal(){
       <label>Trainer Code
         <select id="trainerCode"></select>
       </label>
-      <label>Assign to User
-        <select id="assignUser"><option value="">— select user —</option></select>
+      <label>Assign to Users
+        <select id="assignUsers" multiple size="8" style="min-height: 8.5em;">
+        </select>
+        <div class="tiny muted">Tip: Cmd/Ctrl-click to select multiple.</div>
       </label>
     </div>
 
@@ -944,6 +946,13 @@ function CoachPortal(){
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
   `;
+
+  function getSelectedUserIds(){
+  const sel = root.querySelector('#assignUsers');
+  return Array.from(sel.selectedOptions || [])
+    .map(o => o.value)
+    .filter(Boolean);
+}
 
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
   root.querySelector('#openTemplateBuilder')?.addEventListener('click', ()=> go('/template-builder'));
@@ -1045,36 +1054,46 @@ function CoachPortal(){
     sessions.push(...copies); render();
   });
 
-  root.querySelector('#publish').addEventListener('click', async()=>{
-    const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
-    const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
-    const startDate = root.querySelector('#startDate').value || null;
-    const targetUser = root.querySelector('#assignUser').value || '';
+ root.querySelector('#publish').addEventListener('click', async()=>{
+  const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
+  const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
+  const startDate = root.querySelector('#startDate').value || new Date().toISOString().slice(0,10);
+  const targetUsers = getSelectedUserIds(); // <-- array
 
-    if(!sessions.length) return alert('Add at least one session.');
-    if(!db || !state.user) return alert('Login + Firebase required');
+  if(!sessions.length) return alert('Add at least one session.');
+  if(!db || !state.user) return alert('Login + Firebase required');
 
-    try{
-      await db.collection('programs').doc(trainerCode).collection('weeks').doc(String(weekNumber))
-        .set({ weekNumber, sessions }, { merge: true });
+  try{
+    // Publish/update the week once
+    await db.collection('programs').doc(trainerCode)
+      .collection('weeks').doc(String(weekNumber))
+      .set({ weekNumber, sessions }, { merge: true });
 
-      if(targetUser){
-        await db.collection('assignments').doc(targetUser).set({
-          trainerCode, weekNumber, startDate: startDate || new Date().toISOString().slice(0,10),
+    // Assign to all selected users (batched)
+    if(targetUsers.length){
+      const batch = db.batch();
+      targetUsers.forEach(uid=>{
+        const ref = db.collection('assignments').doc(uid);
+        batch.set(ref, {
+          trainerCode, weekNumber, startDate,
           assignedAt: firebase.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
-      }
+      });
+      await batch.commit();
+    }
 
-      alert('Published!');
-      root.querySelector('#out').textContent =
-        `Published week ${weekNumber} (${sessions.length} sessions)` + (targetUser ? ' and assigned to user.' : '.');
-    }catch(e){ alert(e.message); }
-  });
+    alert(`Published week ${weekNumber} (${sessions.length} sessions)` +
+          (targetUsers.length ? ` and assigned to ${targetUsers.length} user(s).` : '.'));
+    root.querySelector('#out').textContent =
+      `Published week ${weekNumber} • ${sessions.length} sessions` +
+      (targetUsers.length ? ` • Assigned to ${targetUsers.length}` : '');
+  }catch(e){ alert(e.message); }
+});
 
   async function populateLookups(){
     const codeSel = root.querySelector('#trainerCode');
-    const userSel = root.querySelector('#assignUser');
-    codeSel.innerHTML = ``; userSel.innerHTML = `<option value="">— select user —</option>`;
+    const userSel = root.querySelector('#assignUsers');
+    codeSel.innerHTML = ``; userSel.innerHTML = ``;
 
     if(db && state.user){
       const codes = await db.collection('trainers').get();

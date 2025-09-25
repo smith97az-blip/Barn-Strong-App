@@ -1,4 +1,5 @@
-// Barn Strong v2.5 (clean optimized build)
+console.log('Barn Strong build v2.6.7 @ ' + new Date().toISOString());
+window.__BUILD_ID__ = 'v2.6.7';
 // ========================================
 
 // ---- Helpers ----

@@ -771,19 +771,23 @@ function ExerciseLibrary(){
 
   // render helper
   function renderList(names){
-    list.innerHTML = '';
-    const arr = (names || []).slice().sort();
-    if (!arr.length) {
-      list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
-      return;
-    }
-    arr.forEach(name=>{
-      const li = document.createElement('li');
-      li.className = 'item';
-      li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">Use Variation Record to add history</div></div>`;
-      list.appendChild(li);
-    });
+  list.innerHTML = '';
+  const arr = (names || [])
+    .slice()
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  
+  if (!arr.length) {
+    list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
+    return;
   }
+  arr.forEach(name=>{
+    const li = document.createElement('li');
+    li.className = 'item';
+    li.innerHTML = `<div class="grow"><div class="bold">${name}</div><div class="muted small">Use Variation Record to add history</div></div>`;
+    list.appendChild(li);
+  });
+}
+
 
   // load full library (DEFAULT_EXERCISES + user exercises)
   getExerciseNames()

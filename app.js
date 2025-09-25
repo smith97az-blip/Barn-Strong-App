@@ -60,29 +60,6 @@ async function writePlannedDaysToFirestore(uid, map){
   await batch.commit();
 }
 
-function renderExerciseLibraryInline(container){
-  container.innerHTML = '';
-
-  // list
-  const list = document.createElement('ul');
-  list.className = 'list';
-  const arr = (state.exercises || []).slice().sort();
-
-  if (!arr.length){
-    list.innerHTML = `<li class="item"><div class="muted">No exercises yet.</div></li>`;
-  } else {
-    arr.forEach(name=>{
-      const li = document.createElement('li'); 
-      li.className = 'item';
-      li.innerHTML = `
-        <div class="grow">
-          <div class="bold">${name}</div>
-          <div class="muted small">Available in dropdowns across the app</div>
-        </div>`;
-      list.appendChild(li);
-    });
-  }
-
   // add form
   const form = document.createElement('div'); 
   form.className = 'row mt';
@@ -111,8 +88,6 @@ function renderExerciseLibraryInline(container){
       ls.set('bs_exercises', local); 
       state.exercises = local;
     }
-    // quick refresh of this section
-    renderExerciseLibraryInline(container);
   });
 
   container.appendChild(form);
@@ -874,8 +849,6 @@ function CoachPortal(){
     <div class="divider"></div>
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
-    <div class="divider"></div>
-<h3>Exercise Library</h3>
   `;
 
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));

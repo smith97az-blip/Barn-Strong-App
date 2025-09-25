@@ -868,6 +868,7 @@ function CoachPortal(){
       <button class="btn ghost" id="openTemplateBuilder">New Template</button>
       <button class="btn ghost" id="openSavedTemplates">Saved Templates</button>
       <button class="btn ghost" id="athleteViewBtn">Athlete View</button>
+      <button class="btn ghost" id="exerciseLibBtn">Exercise Library</button>
     </div>
 
     <div class="divider"></div>
@@ -875,12 +876,13 @@ function CoachPortal(){
     <div id="out" class="mt muted small"></div>
     <div class="divider"></div>
 <h3>Exercise Library</h3>
-<div id="exLib"></div>
   `;
 
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
   root.querySelector('#openTemplateBuilder')?.addEventListener('click', ()=> go('/template-builder'));
   root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
+  root.querySelector('#exerciseLibBtn').addEventListener('click', () => go('/exercises'));
+
   
   // flatpickr on Start Date
   setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
@@ -1033,7 +1035,6 @@ function CoachPortal(){
   }
 
   populateLookups();
-  renderExerciseLibraryInline(root.querySelector('#exLib'));
   page('Coach Portal', root);
 }
 

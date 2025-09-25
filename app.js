@@ -13,6 +13,30 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+// ---- Toast helper ----
+function showToast(msg){
+  let t = document.getElementById('toast');
+  if (!t){
+    t = document.createElement('div');
+    t.id = 'toast';
+    t.style.position = 'fixed';
+    t.style.bottom = '20px';
+    t.style.left = '50%';
+    t.style.transform = 'translateX(-50%)';
+    t.style.background = '#333';
+    t.style.color = '#fff';
+    t.style.padding = '8px 16px';
+    t.style.borderRadius = '6px';
+    t.style.zIndex = 9999;
+    t.style.transition = 'opacity 0.5s ease';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = '1';
+  setTimeout(()=>{ t.style.opacity = '0'; }, 2000);
+}
+
+
 async function deleteExerciseByName(name){
   if (!name) return;
   // Confirm UX
@@ -824,15 +848,20 @@ function ExerciseLibrary(){
       list.appendChild(li);
     });
 
-    // Wire up delete buttons
+    // Wire up delete buttons (fixed try/catch + braces)
     list.querySelectorAll('.del-ex').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
         const name = btn.getAttribute('data-name');
-        await deleteExerciseByName(name);
-        // cache-bust and reload
-        _exerciseNamesCache = null;
-        const fresh = db && state?.user?.uid ? await getExerciseNames() : (state.exercises || []);
-        renderList(fresh);
+        try{
+          await deleteExerciseByName(name);
+          // cache-bust and reload
+          _exerciseNamesCache = null;
+          const fresh = db && state?.user?.uid ? await getExerciseNames() : (state.exercises || []);
+          renderList(fresh);
+          showToast(`Exercise "${name}" deleted`);
+        }catch(e){
+          alert(e.message);
+        }
       });
     });
   }
@@ -858,7 +887,7 @@ function ExerciseLibrary(){
           .doc(slug(name))
           .set({ name });
       } else {
-        const local = ls.get('bs_exercises', DEFAULT_EXERCISES);
+        const local = ls.get('bs_exercises', DEFAULT_EXERCISES) || [];
         if (!local.includes(name)) local.push(name);
         ls.set('bs_exercises', local);
         state.exercises = local;
@@ -869,6 +898,9 @@ function ExerciseLibrary(){
       const names = await getExerciseNames();
       renderList(names);
       form.querySelector('#exName').value = '';
+
+      // success toast
+      showToast(`Exercise "${name}" added successfully ✅`);
     } catch(e){
       alert(e.message);
     }
@@ -876,6 +908,7 @@ function ExerciseLibrary(){
 
   page('Exercise Library', [form, list]);
 }
+
 
 // ---- Coach Portal ----
 function CoachPortal(){

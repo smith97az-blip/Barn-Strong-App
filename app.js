@@ -13,6 +13,14 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+function nextDateForDowOnOrAfter(anchorISO, dow /*0=Sun..6=Sat*/){
+  const d = new Date(anchorISO);
+  const cur = d.getDay();
+  const add = ( (Number(dow) - cur) + 7 ) % 7;  // 0..6 days
+  d.setDate(d.getDate() + add);
+  return d.toISOString().slice(0,10);
+}
+
 // --- Global Exercise Library helpers (compat SDK) ---
 
 async function upsertGlobalExercise(id, data) {
@@ -104,20 +112,30 @@ function addDaysISO(iso, n){
 // Build a { [date]: { title, blocks, status } } map from a week + startDate
 function planSessionsToDates(sessions = [], startDate){
   const map = {};
-  if (!sessions.length) return map;
+  if (!sessions.length || !startDate) return map;
   let idx = 0;
 
   sessions.forEach((s) => {
-    // If coach set an explicit date, use it; otherwise lay out sequentially from startDate
-    const date =
-      (s.date && /^\d{4}-\d{2}-\d{2}$/.test(s.date)) ? s.date
-      : (startDate ? addDaysISO(startDate, idx) : null);
+    let date = null;
 
-    if (!date) return;          // skip if we truly have no date anchor
+    if (s.date && /^\d{4}-\d{2}-\d{2}$/.test(s.date)) {
+      date = s.date;  // explicit date wins
+    } else if (s.dow != null && !isNaN(Number(s.dow))) {
+      // place on the selected weekday on/after startDate
+      date = nextDateForDowOnOrAfter(startDate, Number(s.dow));
+    } else {
+      // legacy: sequential placement from startDate
+      date = addDaysISO(startDate, idx);
+    }
+
+    // avoid collisions (two sessions same day) by bumping forward
+    while (map[date]) date = addDaysISO(date, 1);
+
     map[date] = {
       title: s.title || `Session ${idx+1}`,
       blocks: s.blocks || [],
-      status: 'planned'
+      status: s.status || 'planned',
+      date
     };
     idx++;
   });
@@ -142,21 +160,21 @@ async function writePlannedDaysToFirestore(uid, map){
   await batch.commit();
 }
 
-// Assign Template → User (resolved)
+// Assign Template → User (respects DOW)
 async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
-  // 1) Materialize template grid into programs/{trainerCode}/weeks/*
-  //    Group rows by week and build sessions arrays.
-  const weeksMap = {}; // week -> sessions[]
+  // Build week → sessions[] from template.grid
+  const weeksMap = {}; // weekNumber -> sessions[]
 
   (template.grid || []).forEach(cell => {
     const w = Number(cell.week);
     if (!weeksMap[w]) weeksMap[w] = [];
 
-    // One "session" per day cell if it has content
-    if (cell.movement || cell.setsreps || cell.load || cell.notes) {
+    // one session per non-empty cell
+    if (cell.movement || cell.setsreps || cell.load || cell.notes || (cell.dow != null)) {
       weeksMap[w].push({
         title: `${cell.day}`,
-        date: null, // left null; UI can place relative to assignment startDate
+        date: null,                 // left null; planning computes from DOW
+        dow: (cell.dow != null && !isNaN(Number(cell.dow))) ? Number(cell.dow) : null, // 0..6 or null
         blocks: [{
           name:   cell.movement || '',
           sets:   parseInt((cell.setsreps || '').split('x')[0] || '') || null,
@@ -168,7 +186,7 @@ async function assignTemplateToUser({ templateId, template, trainerCode, userId,
     }
   });
 
-  // 2) Write weeks
+  // Write weeks
   const batch = db.batch();
   Object.entries(weeksMap).forEach(([weekNumber, sessions]) => {
     const ref = db.collection('programs')
@@ -176,12 +194,12 @@ async function assignTemplateToUser({ templateId, template, trainerCode, userId,
     batch.set(ref, { weekNumber: Number(weekNumber), sessions }, { merge: true });
   });
 
-  // 3) Link assignment to the user
+  // Link assignment to the user
   batch.set(
     db.collection('assignments').doc(userId),
     {
       trainerCode,
-      weekNumber: 1,
+      weekNumber: 1, // you can change this if you assign other weeks
       startDate,
       templateId,
       assignedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -191,6 +209,7 @@ async function assignTemplateToUser({ templateId, template, trainerCode, userId,
 
   await batch.commit();
 }
+
 
 // ---- Modal Helper ----
 function openModal(contentHTML){
@@ -224,27 +243,40 @@ function defaultOffsetsForCount(n){
 
 function buildSessionsMapFromWeeks(weeks, startDateISO){
   const map = {};
-  if (!weeks || !weeks.length) return map;
+  if (!weeks || !weeks.length || !startDateISO) return map;
 
-  const base = startDateISO || new Date().toISOString().slice(0,10);
-
-  // Sort by numeric weekNumber (tolerates doc id strings)
+  // Sort by numeric weekNumber
   const ordered = weeks.slice().sort((a,b)=>
     (Number(a.weekNumber)||0) - (Number(b.weekNumber)||0)
   );
 
   ordered.forEach((w, wi)=>{
     const sessions = w.sessions || [];
-    const offsets = defaultOffsetsForCount(sessions.length);
+    const weekAnchor = addDaysISO(startDateISO, wi * 7);
 
     sessions.forEach((s, i)=>{
-      // If coach provided an explicit date in the session, use it. Otherwise, compute.
-      const computed = addDaysISO(addDaysISO(base, wi * 7), offsets[i] ?? i);
-      const date = s.date || computed;
+      let date = null;
+
+      if (s.date && /^\d{4}-\d{2}-\d{2}$/.test(s.date)) {
+        date = s.date;
+      } else if (s.dow != null && !isNaN(Number(s.dow))) {
+        // place within this week on the selected DOW
+        date = nextDateForDowOnOrAfter(weekAnchor, Number(s.dow));
+      } else {
+        // fallback: spread through the week with friendly offsets
+        const offsets = defaultOffsetsForCount(sessions.length);
+        const off = offsets[i] ?? i;
+        date = addDaysISO(weekAnchor, off);
+      }
+
+      // avoid same-day collision
+      while (map[date]) date = addDaysISO(date, 1);
+
       map[date] = {
-        ...s,
+        ...(s || {}),
         date,
-        title: s.title || `W${w.weekNumber || (wi+1)} S${i+1}`
+        title: s.title || `W${w.weekNumber || (wi+1)} S${i+1}`,
+        status: s.status || 'planned'
       };
     });
   });

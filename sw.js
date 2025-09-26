@@ -33,3 +33,55 @@ self.addEventListener('install', (event) => {
           await cache.put(req, res.clone());
         } else {
           console.warn('[SW] Skip caching (bad status):', req.url, res.status);
+        }
+      } catch (e) {
+        console.warn('[SW] Skip caching (fetch failed):', req.url, e);
+      }
+    }));
+
+    // Activate this SW immediately
+    await self.skipWaiting();
+  })());
+});
+
+// ACTIVATE: clean old caches
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const names = await caches.keys();
+    await Promise.all(
+      names
+        .filter((n) => n.startsWith('bs-static-') && n !== CACHE_NAME)
+        .map((n) => caches.delete(n))
+    );
+    await self.clients.claim();
+  })());
+});
+
+// FETCH: cache-first for GET; fall back to network; ignore search to tolerate ?v=...
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+
+  event.respondWith((async () => {
+    // Try cache (ignoreSearch lets /app.js serve /app.js?v=123)
+    const cached = await caches.match(req, { ignoreSearch: true });
+    if (cached) return cached;
+
+    try {
+      const netRes = await fetch(req);
+      // Stash a copy for future if OK/opaque
+      if (netRes && (netRes.ok || netRes.type === 'opaque')) {
+        const cache = await caches.open(CACHE_NAME);
+        cache.put(req, netRes.clone()).catch(() => {});
+      }
+      return netRes;
+    } catch (e) {
+      // Navigation fallback: serve cached index.html for SPA routes when offline
+      if (req.mode === 'navigate') {
+        const fallback = await caches.match(u('index.html'), { ignoreSearch: true });
+        if (fallback) return fallback;
+      }
+      throw e;
+    }
+  })());
+});

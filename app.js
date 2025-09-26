@@ -2030,7 +2030,14 @@ document.addEventListener('click', (e) => {
     go('/login');
   }
 });
-
+// ---- Service Worker (GitHub Pages scope-safe) ----
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => console.log('SW registered:', reg.scope))
+      .catch(err => console.warn('SW register failed', err));
+  });
+}
 
 main();
 qs('#splash')?.remove();

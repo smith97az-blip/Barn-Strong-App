@@ -290,12 +290,12 @@ function attachProgramSync(uid){
 }
 
 function rerenderIfProgramPages(){
-  const path = location.hash.replace('#','') || '/login';
-  // Lightweight: force a re-render if the user is on a page that shows program/sessions.
+  const path = currentRoutePath();
   if (['/dashboard','/calendar','/today','/program'].includes(path)) {
     render();
   }
 }
+
 
 
 function calcStreak(logs){
@@ -505,6 +505,13 @@ function page(title, body){
   else if(Array.isArray(body)){ body.forEach(x=>card.appendChild(x)); }
   root.appendChild(card);
 }
+
+// Returns just the route path (no query), e.g. "#/athlete?uid=123" -> "/athlete"
+function currentRoutePath(){
+  const hash = location.hash || '';
+  return (hash.split('?')[0] || '#/login').replace('#','') || '/login';
+}
+
 
 // ---- Analytics ----
 function logEvent(name, data = {}) {
@@ -1776,8 +1783,8 @@ function subscribeExercises(uid) {
     items.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
     state.exercises = items;
     // Only re-render Coach Portal-heavy views to avoid thrash
-    if (location.hash === '#/coach' || location.hash === '#/template' || location.hash === '#/exercises') {
-      render();
+    const p = currentRoutePath();
+      if (p === '/coach' || p === '/template' || p === '/exercises') {render();
     }
   }
 
@@ -1910,7 +1917,7 @@ async function main() {
 }
 
 function render() {
-  const path = location.hash.replace('#', '') || '/login';
+  const path = currentRoutePath();          // <-- strip ?uid=...
   const authed = !!state.user;
 
   qs('#drawerName').textContent = state.profile?.username || (state.user?.email || 'Guest');
@@ -1920,6 +1927,7 @@ function render() {
 
   (routes[path] || routes['/404'])();
 }
+
 
 // Logout handling
 document.addEventListener('click', (e) => {

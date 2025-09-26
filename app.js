@@ -2,92 +2,6 @@ console.log('Barn Strong build v3.1.2 @ ' + new Date().toISOString());
 window.__BUILD_ID__ = 'v2.6.7';
 // ========================================
 
-// -------- One-time migration: /users/{COACH_UID}/exercises -> /exercises --------
-// Requirements: logged in as COACH_UID; Firestore rules already allow coach writes to /exercises
-
-window.migrateCoachExercisesToGlobal = async function migrateCoachExercisesToGlobal(COACH_UID, {dryRun=false} = {}) {
-  const db = firebase.firestore();
-  const auth = firebase.auth();
-  const u = auth.currentUser;
-
-  if (!u) throw new Error("Not signed in");
-  if (u.uid !== COACH_UID) throw new Error("You must be signed in as the coach to run this");
-
-  console.log("[Migration] Starting. Dry run:", dryRun);
-
-  // 1) Read all coach-owned personal exercises
-  const srcColl = db.collection("users").doc(COACH_UID).collection("exercises");
-  const srcSnap = await srcColl.get();
-  console.log(`[Migration] Found ${srcSnap.size} coach-owned personal exercises`);
-
-  // 2) Build a lookup of existing GLOBAL exercises by nameLower to avoid duplicates
-  const globalSnap = await db.collection("exercises").get();
-  const existingByLower = new Map();
-  globalSnap.forEach(d => {
-    const n = (d.data()?.name || "").trim();
-    if (n) existingByLower.set(n.toLowerCase(), d.id);
-  });
-  console.log(`[Migration] Found ${existingByLower.size} existing global exercises`);
-
-  // 3) Prepare writes (skip duplicates by nameLower)
-  const toWrite = [];
-  srcSnap.forEach(d => {
-    const data = d.data() || {};
-    const name = (data.name || "").trim();
-    if (!name) return;
-
-    const lower = name.toLowerCase();
-    if (existingByLower.has(lower)) {
-      // Already exists globally—skip
-      return;
-    }
-
-    // Keep same ID if you want, or let Firestore generate a new one:
-    // const dstRef = db.collection("exercises").doc(d.id);
-    const dstRef = db.collection("exercises").doc(); // generate new ID to avoid any collisions
-    const now = firebase.firestore.FieldValue.serverTimestamp();
-
-    toWrite.push({
-      ref: dstRef,
-      data: {
-        name,
-        nameLower: lower,
-        category: data.category || "",
-        description: data.description || "",
-        tags: Array.isArray(data.tags) ? data.tags : [],
-        createdBy: COACH_UID,
-        createdAt: data.createdAt || now,
-        updatedAt: now,
-        migratedFrom: `users/${COACH_UID}/exercises/${d.id}`,
-        migratedAt: now,
-      }
-    });
-  });
-
-  console.log(`[Migration] Will write ${toWrite.length} new global exercises (after de-dup)`);
-
-  if (dryRun) {
-    console.table(toWrite.map(w => ({ id: w.ref.id, name: w.data.name })));
-    console.log("[Migration] Dry run ONLY. No writes performed.");
-    return { plannedWrites: toWrite.length };
-  }
-
-  // 4) Commit in chunks (≤ 400 per batch for safety)
-  const chunkSize = 400;
-  let written = 0;
-  for (let i = 0; i < toWrite.length; i += chunkSize) {
-    const chunk = toWrite.slice(i, i + chunkSize);
-    const batch = db.batch();
-    chunk.forEach(w => batch.set(w.ref, w.data, { merge: true }));
-    await batch.commit();
-    written += chunk.length;
-    console.log(`[Migration] Wrote ${written}/${toWrite.length}`);
-  }
-
-  console.log("[Migration] Done.", { created: written, skippedDuplicates: srcSnap.size - written });
-  return { created: written, skippedDuplicates: srcSnap.size - written };
-};
-
 
 // ---- Helpers ----
 const qs = s => document.querySelector(s);
@@ -1800,6 +1714,92 @@ document.addEventListener('click', (e) => {
     go('/login');
   }
 });
+
+// -------- One-time migration: /users/{COACH_UID}/exercises -> /exercises --------
+// Requirements: logged in as COACH_UID; Firestore rules already allow coach writes to /exercises
+
+window.migrateCoachExercisesToGlobal = async function migrateCoachExercisesToGlobal(COACH_UID, {dryRun=false} = {}) {
+  const db = firebase.firestore();
+  const auth = firebase.auth();
+  const u = auth.currentUser;
+
+  if (!u) throw new Error("Not signed in");
+  if (u.uid !== COACH_UID) throw new Error("You must be signed in as the coach to run this");
+
+  console.log("[Migration] Starting. Dry run:", dryRun);
+
+  // 1) Read all coach-owned personal exercises
+  const srcColl = db.collection("users").doc(COACH_UID).collection("exercises");
+  const srcSnap = await srcColl.get();
+  console.log(`[Migration] Found ${srcSnap.size} coach-owned personal exercises`);
+
+  // 2) Build a lookup of existing GLOBAL exercises by nameLower to avoid duplicates
+  const globalSnap = await db.collection("exercises").get();
+  const existingByLower = new Map();
+  globalSnap.forEach(d => {
+    const n = (d.data()?.name || "").trim();
+    if (n) existingByLower.set(n.toLowerCase(), d.id);
+  });
+  console.log(`[Migration] Found ${existingByLower.size} existing global exercises`);
+
+  // 3) Prepare writes (skip duplicates by nameLower)
+  const toWrite = [];
+  srcSnap.forEach(d => {
+    const data = d.data() || {};
+    const name = (data.name || "").trim();
+    if (!name) return;
+
+    const lower = name.toLowerCase();
+    if (existingByLower.has(lower)) {
+      // Already exists globally—skip
+      return;
+    }
+
+    // Keep same ID if you want, or let Firestore generate a new one:
+    // const dstRef = db.collection("exercises").doc(d.id);
+    const dstRef = db.collection("exercises").doc(); // generate new ID to avoid any collisions
+    const now = firebase.firestore.FieldValue.serverTimestamp();
+
+    toWrite.push({
+      ref: dstRef,
+      data: {
+        name,
+        nameLower: lower,
+        category: data.category || "",
+        description: data.description || "",
+        tags: Array.isArray(data.tags) ? data.tags : [],
+        createdBy: COACH_UID,
+        createdAt: data.createdAt || now,
+        updatedAt: now,
+        migratedFrom: `users/${COACH_UID}/exercises/${d.id}`,
+        migratedAt: now,
+      }
+    });
+  });
+
+  console.log(`[Migration] Will write ${toWrite.length} new global exercises (after de-dup)`);
+
+  if (dryRun) {
+    console.table(toWrite.map(w => ({ id: w.ref.id, name: w.data.name })));
+    console.log("[Migration] Dry run ONLY. No writes performed.");
+    return { plannedWrites: toWrite.length };
+  }
+
+  // 4) Commit in chunks (≤ 400 per batch for safety)
+  const chunkSize = 400;
+  let written = 0;
+  for (let i = 0; i < toWrite.length; i += chunkSize) {
+    const chunk = toWrite.slice(i, i + chunkSize);
+    const batch = db.batch();
+    chunk.forEach(w => batch.set(w.ref, w.data, { merge: true }));
+    await batch.commit();
+    written += chunk.length;
+    console.log(`[Migration] Wrote ${written}/${toWrite.length}`);
+  }
+
+  console.log("[Migration] Done.", { created: written, skippedDuplicates: srcSnap.size - written });
+  return { created: written, skippedDuplicates: srcSnap.size - written };
+};
 
 
 main();

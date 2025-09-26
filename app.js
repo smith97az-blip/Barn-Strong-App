@@ -1253,20 +1253,20 @@ function TemplateBuilder(){
   const body = root.querySelector('#tplBody');
   const weeksInput = root.querySelector('#tplWeeks');
 
-  function daySelectHtml(){
-    return `
-      <select class="slot dow" data-field="dow">
+ function daySelectHtml(){
+  return `
+      <select class="dow" data-field="dow" title="Select day of week">
         <option value="">— day —</option>
         ${DOWS.map((n,i)=> `<option value="${i}">${n}</option>`).join('')}
       </select>
-    `;
-  }
+  `;
+}
 
   function createWeekRow(weekNumber){
     const tr = document.createElement('tr');
     tr.innerHTML = `<td class="bold" style="white-space:nowrap;">Week ${weekNumber}</td>` + DAYS.map(()=>`
       <td class="cell" data-week="${weekNumber}">
-        <div class="row" style="gap:.5rem; align-items:center;">
+        <div class="row" style="gap:.75rem; align-items:center;">
           ${daySelectHtml()}
           <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement" style="min-width:14em;"/>
         </div>

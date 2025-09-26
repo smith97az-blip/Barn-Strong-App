@@ -679,15 +679,14 @@ function Dashboard(){
   }, 10);
 }
 
-// ---- Today's Session (wired Start/Complete) ----
+// ---- Today's Session (with live timer + persisted duration) ----
 function TodaysSession(){
   const today = new Date().toISOString().slice(0,10);
+  // Merge any existing session object
   const sess = (state.sessionsMap || {})[today];
   const el = document.createElement('div');
 
-  const header = document.createElement('div');
-  header.className = 'row';
-
+  // If nothing scheduled today -> show “unscheduled” prompt
   if(!sess){
     const next = findNextSession(state.sessionsMap || {});
     el.innerHTML = `<p>No session scheduled for today.</p><p class="muted">Next: ${next? (next.date+' — '+next.title) : 'No upcoming'}</p>`;
@@ -700,10 +699,39 @@ function TodaysSession(){
     return page("Today's Session", el);
   }
 
-  // helpers
-  async function setDayStatus(statusPatch){
-    // statusPatch: { status: 'in_progress'|'completed', startedAt? completedAt? title? blocks? }
-    state.sessionsMap[today] = Object.assign({}, state.sessionsMap[today] || {}, statusPatch, { date: today });
+  // --- Timer helpers (kept in state so re-renders can stop old intervals) ---
+  state.__todayTimer = state.__todayTimer || { id:null, startMs:null };
+  function clearTimer(){
+    if (state.__todayTimer.id) { try{ clearInterval(state.__todayTimer.id); }catch{} }
+    state.__todayTimer.id = null;
+  }
+  function formatHMS(ms){
+    const s = Math.max(0, Math.floor(ms/1000));
+    const hh = String(Math.floor(s/3600)).padStart(2,'0');
+    const mm = String(Math.floor((s%3600)/60)).padStart(2,'0');
+    const ss = String(s%60).padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
+  }
+  function startTimer(fromMs){
+    state.__todayTimer.startMs = fromMs;
+    const chip = el.querySelector('#timerChip');
+    clearTimer();
+    const tick = ()=>{
+      const elapsed = Date.now() - state.__todayTimer.startMs;
+      if (chip) chip.textContent = 'Time: ' + formatHMS(elapsed);
+    };
+    tick();
+    state.__todayTimer.id = setInterval(tick, 1000);
+  }
+
+  // --- write helper: updates Firestore + local state, then re-renders header/buttons cleanly ---
+  async function setDayStatus(patch){
+    // Merge into state so UI updates instantly
+    state.sessionsMap[today] = Object.assign(
+      {}, state.sessionsMap[today] || {},
+      patch, { date: today }
+    );
+
     if (db && state.user){
       try {
         const ref = db.collection('sessions').doc(state.user.uid).collection('days').doc(today);
@@ -711,28 +739,80 @@ function TodaysSession(){
           title: sess.title || `Session`,
           blocks: sess.blocks || [],
         };
-        await ref.set(
-          Object.assign({}, base, statusPatch),
-          { merge: true }
-        );
+        await ref.set(Object.assign({}, base, patch), { merge: true });
       } catch(e){
         console.warn('setDayStatus', e);
         showToast(e.message || 'Failed to update status');
       }
     }
-    render(); // refresh UI
+    // Repaint header buttons/chips (not the whole page content)
+    paintHeader();
   }
 
-  const status = sess.status || 'planned';
-  const disableStart = (status === 'in_progress' || status === 'completed');
-  const disableComplete = (status === 'completed');
+  // --- Header (status + timer + buttons) ---
+  function paintHeader(){
+    const cur = state.sessionsMap[today] || {};
+    const status = cur.status || 'planned';
+    const started = !!cur.startedAtMs;
+    const completed = status === 'completed';
+    const header = el.querySelector('#todayHeader');
 
-  header.innerHTML = `
-    <div class="chip">Status: ${status}</div>
-    <button class="btn small" id="startBtn" ${disableStart ? 'disabled' : ''}>Start</button>
-    <button class="btn small" id="completeBtn" ${disableComplete ? 'disabled' : ''}>Complete</button>
-    <a href="#/unscheduled" class="btn small ghost">Unscheduled Session</a>
-  `;
+    const disableStart = (status === 'in_progress' || status === 'completed');
+    const disableComplete = (status === 'completed');
+
+    header.innerHTML = `
+      <div class="chip" id="statusChip">Status: ${status}</div>
+      <div class="chip" id="timerChip">${completed && cur.durationSec != null ? 'Time: ' + formatHMS(cur.durationSec*1000) : 'Time: 00:00:00'}</div>
+      <button class="btn small" id="startBtn" ${disableStart ? 'disabled' : ''}>Start</button>
+      <button class="btn small" id="completeBtn" ${disableComplete ? 'disabled' : ''}>Complete</button>
+      <a href="#/unscheduled" class="btn small ghost">Unscheduled Session</a>
+    `;
+
+    // Wire buttons
+    header.querySelector('#startBtn')?.addEventListener('click', async ()=>{
+      // set start fields + status
+      const startMs = Date.now();
+      await setDayStatus({
+        status: 'in_progress',
+        startedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null,
+        startedAtMs: startMs
+      });
+      startTimer(startMs);
+      showToast('Session started');
+      logEvent('session_started', { date: today });
+    });
+
+    header.querySelector('#completeBtn')?.addEventListener('click', async ()=>{
+      const cur2 = state.sessionsMap[today] || {};
+      const startMs = cur2.startedAtMs || Date.now(); // fallback so we always compute something
+      const endMs = Date.now();
+      const durationSec = Math.max(0, Math.round((endMs - startMs)/1000));
+
+      clearTimer();
+      await setDayStatus({
+        status: 'completed',
+        completedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null,
+        completedAtMs: endMs,
+        durationSec
+      });
+      // Update timer chip to the final time
+      const chip = el.querySelector('#timerChip');
+      if (chip) chip.textContent = 'Time: ' + formatHMS(durationSec*1000);
+      showToast('Session completed');
+      logEvent('session_completed', { date: today, durationSec });
+    });
+
+    // If "in_progress" and we have a start time, ensure timer is running
+    clearTimer();
+    if (status === 'in_progress' && started) {
+      startTimer(cur.startedAtMs);
+    }
+  }
+
+  // --- Build page skeleton ---
+  const header = document.createElement('div');
+  header.className = 'row';
+  header.id = 'todayHeader';
   el.appendChild(header);
 
   const list = document.createElement('ul'); list.className='list';
@@ -760,7 +840,7 @@ function TodaysSession(){
     li.appendChild(rows);
     list.appendChild(li);
 
-    // Log set → write to /logs and mark day in_progress immediately
+    // Log set → /logs write + ensure day is "in_progress" and timer running
     rows.querySelectorAll('.log').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
         const wrap = btn.parentElement;
@@ -775,12 +855,21 @@ function TodaysSession(){
             await db.collection('logs').doc(state.user.uid).collection('entries').add({
               date: today, exercise: ex.name, weight: w, reps: r, sets: 1, source:'set', createdAt: firebase.firestore.FieldValue.serverTimestamp()
             });
-            await setDayStatus({ status: 'in_progress', startedAt: firebase.firestore.FieldValue.serverTimestamp() });
+            // If not already started, start now
+            if ((state.sessionsMap[today]||{}).status !== 'in_progress'){
+              const startMs = Date.now();
+              await setDayStatus({
+                status: 'in_progress',
+                startedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                startedAtMs: startMs
+              });
+              startTimer(startMs);
+            }
           }catch(e){ console.warn(e); }
         }else{
           const local = ls.get('bs_logs',[]); local.unshift({date: today, exercise: ex.name, weight: w, reps: r, sets: 1}); ls.set('bs_logs', local);
           state.sessionsMap[today] && (state.sessionsMap[today].status = 'in_progress');
-          render();
+          if (!state.__todayTimer.id) startTimer(Date.now());
         }
         logEvent('set_logged', { date: today, exercise: ex.name, weight: w, reps: r, set: setNum });
         btn.textContent = 'Logged ✓';
@@ -791,27 +880,29 @@ function TodaysSession(){
   el.appendChild(list);
   page("Today's Session", el);
 
-  // Wire Start / Complete
-  const startBtn = el.querySelector('#startBtn');
-  const completeBtn = el.querySelector('#completeBtn');
+  // Paint header once we’ve mounted the DOM
+  paintHeader();
 
-  startBtn?.addEventListener('click', async ()=>{
-    await setDayStatus({
-      status: 'in_progress',
-      startedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null
-    });
-    showToast('Session started');
-    logEvent('session_started', { date: today });
-  });
+  // --- Resume from Firestore (recover after reload) ---
+  (async ()=>{
+    if (!db || !state.user) return;
+    try{
+      const ref = db.collection('sessions').doc(state.user.uid).collection('days').doc(today);
+      const doc = await ref.get();
+      if (!doc.exists) return;
+      const d = doc.data() || {};
 
-  completeBtn?.addEventListener('click', async ()=>{
-    await setDayStatus({
-      status: 'completed',
-      completedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null
-    });
-    showToast('Session completed');
-    logEvent('session_completed', { date: today });
-  });
+      // Merge into state and refresh header if anything changed
+      const cur = state.sessionsMap[today] || {};
+      const merged = Object.assign({}, cur, d, { date: today });
+      state.sessionsMap[today] = merged;
+
+      // Update header view & timer state
+      paintHeader();
+    }catch(e){
+      console.warn('resume today doc', e);
+    }
+  })();
 }
 
 

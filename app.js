@@ -679,8 +679,7 @@ function Dashboard(){
   }, 10);
 }
 
-// ---- Today's Session ----
-
+// ---- Today's Session (wired Start/Complete) ----
 function TodaysSession(){
   const today = new Date().toISOString().slice(0,10);
   const sess = (state.sessionsMap || {})[today];
@@ -701,11 +700,37 @@ function TodaysSession(){
     return page("Today's Session", el);
   }
 
+  // helpers
+  async function setDayStatus(statusPatch){
+    // statusPatch: { status: 'in_progress'|'completed', startedAt? completedAt? title? blocks? }
+    state.sessionsMap[today] = Object.assign({}, state.sessionsMap[today] || {}, statusPatch, { date: today });
+    if (db && state.user){
+      try {
+        const ref = db.collection('sessions').doc(state.user.uid).collection('days').doc(today);
+        const base = {
+          title: sess.title || `Session`,
+          blocks: sess.blocks || [],
+        };
+        await ref.set(
+          Object.assign({}, base, statusPatch),
+          { merge: true }
+        );
+      } catch(e){
+        console.warn('setDayStatus', e);
+        showToast(e.message || 'Failed to update status');
+      }
+    }
+    render(); // refresh UI
+  }
+
   const status = sess.status || 'planned';
+  const disableStart = (status === 'in_progress' || status === 'completed');
+  const disableComplete = (status === 'completed');
+
   header.innerHTML = `
     <div class="chip">Status: ${status}</div>
-    <button class="btn small" id="startBtn">Start</button>
-    <button class="btn small" id="completeBtn">Complete</button>
+    <button class="btn small" id="startBtn" ${disableStart ? 'disabled' : ''}>Start</button>
+    <button class="btn small" id="completeBtn" ${disableComplete ? 'disabled' : ''}>Complete</button>
     <a href="#/unscheduled" class="btn small ghost">Unscheduled Session</a>
   `;
   el.appendChild(header);
@@ -735,6 +760,7 @@ function TodaysSession(){
     li.appendChild(rows);
     list.appendChild(li);
 
+    // Log set → write to /logs and mark day in_progress immediately
     rows.querySelectorAll('.log').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
         const wrap = btn.parentElement;
@@ -749,10 +775,12 @@ function TodaysSession(){
             await db.collection('logs').doc(state.user.uid).collection('entries').add({
               date: today, exercise: ex.name, weight: w, reps: r, sets: 1, source:'set', createdAt: firebase.firestore.FieldValue.serverTimestamp()
             });
-            await db.collection('sessions').doc(state.user.uid).collection('days').doc(today).set({ status: 'in_progress' }, { merge: true });
+            await setDayStatus({ status: 'in_progress', startedAt: firebase.firestore.FieldValue.serverTimestamp() });
           }catch(e){ console.warn(e); }
         }else{
           const local = ls.get('bs_logs',[]); local.unshift({date: today, exercise: ex.name, weight: w, reps: r, sets: 1}); ls.set('bs_logs', local);
+          state.sessionsMap[today] && (state.sessionsMap[today].status = 'in_progress');
+          render();
         }
         logEvent('set_logged', { date: today, exercise: ex.name, weight: w, reps: r, set: setNum });
         btn.textContent = 'Logged ✓';
@@ -762,7 +790,30 @@ function TodaysSession(){
 
   el.appendChild(list);
   page("Today's Session", el);
+
+  // Wire Start / Complete
+  const startBtn = el.querySelector('#startBtn');
+  const completeBtn = el.querySelector('#completeBtn');
+
+  startBtn?.addEventListener('click', async ()=>{
+    await setDayStatus({
+      status: 'in_progress',
+      startedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null
+    });
+    showToast('Session started');
+    logEvent('session_started', { date: today });
+  });
+
+  completeBtn?.addEventListener('click', async ()=>{
+    await setDayStatus({
+      status: 'completed',
+      completedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null
+    });
+    showToast('Session completed');
+    logEvent('session_completed', { date: today });
+  });
 }
+
 
 // ---- Unscheduled Session ----
 function UnscheduledSession(){

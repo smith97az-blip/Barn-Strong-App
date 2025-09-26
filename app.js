@@ -1430,7 +1430,7 @@ function getQueryParam(key){
   }catch{ return null; }
 }
 
-// ---- Athlete Detail (Program | Today | Variation Record) ----
+// ---- Athlete Detail (Program | Scheduled Sessions | Variation Record) ----
 function AthleteDetail(){
   if (!isCoachUser && typeof isCoachUser !== 'function') {
     return page('Athlete Detail', `<p class="muted">Coach access helper missing.</p>`);
@@ -1448,7 +1448,7 @@ function AthleteDetail(){
   root.innerHTML = `
     <div class="tabs row">
       <button class="btn small" data-tab="program">Program</button>
-      <button class="btn small ghost" data-tab="today">Today's Session</button>
+      <button class="btn small ghost" data-tab="scheduled">Scheduled Sessions</button>
       <button class="btn small ghost" data-tab="variations">Variation Record</button>
     </div>
     <div id="athMeta" class="muted small mt">Loading athlete…</div>
@@ -1461,9 +1461,9 @@ function AthleteDetail(){
 
   // Local-only (don't mutate global state.*)
   let profile = {};
-  let programWeeks = [];   // [{weekNumber, sessions:[]}, ...]
-  let sessionsMap = {};    // { date -> { title, blocks, ... } }
-  let logs = [];           // athlete's logs (if rules allow coach read)
+  let sessionsMap = {};       // built from programs + startDate (for reference)
+  let scheduledDays = [];     // [{ date: 'YYYY-MM-DD', title, blocks, status }]
+  let logs = [];              // athlete logs (if rules allow coach read)
 
   function setActive(tab){
     root.querySelectorAll('.tabs .btn').forEach(b=>{
@@ -1474,7 +1474,7 @@ function AthleteDetail(){
   function renderProgram(){
     setActive('program');
     if (!Object.keys(sessionsMap).length){
-      bodyEl.innerHTML = `<p class="muted">No scheduled sessions.</p>`;
+      bodyEl.innerHTML = `<p class="muted">No scheduled sessions derived from program.</p>`;
       return;
     }
     const ul = document.createElement('ul'); ul.className = 'list';
@@ -1497,35 +1497,42 @@ function AthleteDetail(){
     bodyEl.appendChild(ul);
   }
 
-  function renderToday(){
-    setActive('today');
+  function renderScheduled(){
+    setActive('scheduled');
     const today = new Date().toISOString().slice(0,10);
-    const sess = sessionsMap[today];
-    const wrap = document.createElement('div');
 
-    if (!sess){
-      const future = Object.values(sessionsMap)
-        .filter(s => (s.date||'') >= today)
-        .sort((a,b)=> (a.date||'').localeCompare(b.date));
-      const next = future[0];
-      wrap.innerHTML = `<p>No session scheduled for today.</p><p class="muted">Next: ${next? (next.date+' — '+next.title) : 'No upcoming'}</p>`;
-      bodyEl.innerHTML = ''; bodyEl.appendChild(wrap); return;
+    // Show all upcoming (today and future). If you want *all scheduled* including past, remove the filter.
+    const upcoming = (scheduledDays || [])
+      .filter(d => (d.date || '') >= today)
+      .sort((a,b)=> a.date.localeCompare(b.date));
+
+    if (!upcoming.length){
+      bodyEl.innerHTML = `<p class="muted">No upcoming scheduled sessions.</p>`;
+      return;
     }
 
-    const list = document.createElement('ul'); list.className='list';
-    (sess.blocks || []).forEach(ex=>{
-      const setCount = ex.sets || ex.setCount || 1;
-      const plannedReps = ex.reps ?? ex.targetReps ?? '';
+    const ul = document.createElement('ul'); ul.className = 'list';
+    upcoming.forEach(s => {
+      const ex = (s.blocks || []).map(b =>
+        `${b.name} — ${b.sets||1} x ${b.reps??'—'}${b.weight? ` @ ${b.weight} lb`:''}`
+      ).join('<br/>') || '<span class="muted">No blocks</span>';
+
+      const status = (s.status || 'planned');
       const li = document.createElement('li'); li.className='item';
       li.innerHTML = `
         <div class="grow">
-          <div class="bold">${ex.name}</div>
-          <div class="muted small">${setCount} x ${plannedReps}${ex.weight? ' @ '+ex.weight+' lb':''}</div>
+          <div class="row">
+            <div class="bold">${s.title || 'Session'}</div>
+            <span class="chip small" style="margin-left:auto">${status}</span>
+          </div>
+          <div class="small muted">${s.date}</div>
+          <div class="mt small">${ex}</div>
         </div>`;
-      list.appendChild(li);
+      ul.appendChild(li);
     });
+
     bodyEl.innerHTML = '';
-    bodyEl.appendChild(list);
+    bodyEl.appendChild(ul);
   }
 
   function renderVariations(){
@@ -1579,35 +1586,40 @@ function AthleteDetail(){
     profile = uref.exists ? (uref.data()||{}) : {};
     metaEl.textContent = `Athlete: ${profile.username || profile.email || uid}`;
 
-    // Assignment
+    // Assignment → build sessionsMap from program + startDate (read-only reference)
     const asnap = await db.collection('assignments').doc(uid).get();
-    if(!asnap.exists){
+    if (asnap.exists){
+      const a = asnap.data() || {};
+      const trainerCode = a.trainerCode || 'BARN';
+      const startDate = a.startDate || new Date().toISOString().slice(0,10);
+      const weeksSnap = await db.collection('programs').doc(trainerCode).collection('weeks').get();
+      const weeks = weeksSnap.docs.map(d=>{
+        const data = d.data() || {};
+        const wn = data.weekNumber != null ? data.weekNumber : Number(d.id) || null;
+        return { weekNumber: wn, ...data };
+      });
+      sessionsMap = buildSessionsMapFromWeeks(weeks, startDate);
+    } else {
       sessionsMap = {};
-      logs = [];
-      bodyEl.innerHTML = `<p class="muted">No program assigned.</p>`;
-      return;
     }
-    const a = asnap.data() || {};
-    const trainerCode = a.trainerCode || 'BARN';
-    const startDate = a.startDate || new Date().toISOString().slice(0,10);
 
-    // Weeks → sessionsMap (reuse your helper)
-    const weeksSnap = await db.collection('programs').doc(trainerCode).collection('weeks').get();
-    const weeks = weeksSnap.docs.map(d=>{
-      const data = d.data() || {};
-      const wn = data.weekNumber != null ? data.weekNumber : Number(d.id) || null;
-      return { weekNumber: wn, ...data };
-    });
-    sessionsMap = buildSessionsMapFromWeeks(weeks, startDate);
+    // Scheduled sessions from persisted plan (authoritative for "currently scheduled")
+    try{
+      const daysSnap = await db.collection('sessions').doc(uid).collection('days').get();
+      scheduledDays = daysSnap.docs.map(d => ({ date: d.id, ...(d.data() || {}) }));
+    }catch(e){
+      scheduledDays = [];
+      console.warn('Coach cannot read scheduled days (check rules for /sessions)', e);
+    }
 
-    // Logs (coach read may require rules tweak)
+    // Logs for Variation tab (optional; needs coach read in rules)
     try{
       const logsSnap = await db.collection('logs').doc(uid).collection('entries')
                         .orderBy('date','desc').limit(500).get();
       logs = logsSnap.docs.map(d => d.data());
     }catch(e){
       logs = [];
-      console.warn('Coach cannot read athlete logs (expected if rules keep logs private)', e);
+      console.warn('Coach cannot read athlete logs (expected if logs are private)', e);
     }
 
     // Default tab
@@ -1618,7 +1630,7 @@ function AthleteDetail(){
   root.querySelectorAll('.tabs .btn').forEach(btn=>{
     btn.addEventListener('click', ()=> {
       if (btn.dataset.tab === 'program') renderProgram();
-      else if (btn.dataset.tab === 'today') renderToday();
+      else if (btn.dataset.tab === 'scheduled') renderScheduled();
       else renderVariations();
     });
   });

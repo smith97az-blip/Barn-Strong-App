@@ -13,6 +13,49 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+// --- Global Exercise Library helpers (compat SDK) ---
+
+async function upsertGlobalExercise(id, data) {
+  // data: { name, category?, description?, tags? }
+  const db = firebase.firestore();
+  const uid = firebase.auth().currentUser?.uid || null;
+
+  const ref = id
+    ? db.collection("exercises").doc(id)
+    : db.collection("exercises").doc(); // auto-ID
+
+  const name = (data.name || "").trim();
+  if (!name) throw new Error("Exercise name required");
+
+  const now = firebase.firestore.FieldValue.serverTimestamp();
+  const payload = {
+    ...data,
+    name,
+    nameLower: name.toLowerCase(),
+    updatedAt: now,
+    ...(id ? {} : { createdAt: now, createdBy: uid }),
+  };
+
+  await ref.set(payload, { merge: true });
+  return ref.id;
+}
+
+// Delete by *name* (handy if your UI currently only has the name, not the id)
+async function deleteGlobalExerciseByName(name) {
+  const db = firebase.firestore();
+  const key = (name || "").trim().toLowerCase();
+  if (!key) throw new Error("Exercise name required");
+
+  // Look up the doc by nameLower
+  const q = await db.collection("exercises")
+    .where("nameLower", "==", key)
+    .limit(1).get();
+
+  if (q.empty) throw new Error("Exercise not found");
+
+  await q.docs[0].ref.delete();
+}
+
 // ---- Toast helper ----
 function showToast(msg){
   let t = document.getElementById('toast');
@@ -39,30 +82,17 @@ function showToast(msg){
 
 async function deleteExerciseByName(name){
   if (!name) return;
-  // Confirm UX
-  if (!confirm(`Delete "${name}" from your exercise library?`)) return;
+  if (!confirm(`Delete "${name}" from the global exercise library?`)) return;
 
-  if (db && state?.user?.uid){
-    // Firestore path: users/{uid}/exercises/{slug}
-    const id = slug(name);
-    try {
-      await db.collection('users')
-        .doc(state.user.uid)
-        .collection('exercises')
-        .doc(id)
-        .delete();
-      // state.exercises is driven by onSnapshot, so it will refresh automatically
-    } catch(e){
-      alert(e.message || 'Failed to delete');
-    }
-  } else {
-    // Local storage fallback
-    const list = ls.get('bs_exercises', []);
-    const next = list.filter(n => n !== name);
-    ls.set('bs_exercises', next);
-    state.exercises = next;
+  try {
+    await deleteGlobalExerciseByName(name); // uses the helper you already added
+    // state.exercises will refresh via subscribeExercises()
+    showToast(`Exercise "${name}" deleted`);
+  } catch (e){
+    alert(e.message || 'Failed to delete');
   }
 }
+
 
 
 function addDaysISO(iso, n){
@@ -413,23 +443,28 @@ function CalendarPage(){
 
 // ---- Exercise Library → dropdowns ----
 let _exerciseNamesCache = null;
+
 async function loadExerciseLibraryNames(){
   const names = new Set((typeof DEFAULT_EXERCISES !== 'undefined' ? DEFAULT_EXERCISES : []));
   try {
-    if (db && state?.user?.uid) {
-      const snap = await db.collection('users').doc(state.user.uid).collection('exercises').get();
+    if (db) {
+      // Read from GLOBAL library only
+      const snap = await db.collection('exercises').orderBy('nameLower').get();
       snap.forEach(d => d.data()?.name && names.add(d.data().name));
     } else {
+      // Local fallback
       (ls.get('bs_exercises', []) || []).forEach(n => names.add(n));
     }
   } catch(e){ console.warn('loadExerciseLibraryNames', e); }
-  return [...names].sort();
+  return [...names].sort((a,b)=> a.localeCompare(b, undefined, {sensitivity:'base'}));
 }
+
 async function getExerciseNames() {
   if (_exerciseNamesCache) return _exerciseNamesCache;
   _exerciseNamesCache = await loadExerciseLibraryNames();
   return _exerciseNamesCache;
 }
+
 function makeExerciseSelect(className='exname', options=[]){
   const sel = document.createElement('select');
   sel.className = className;
@@ -874,37 +909,34 @@ function ExerciseLibrary(){
     })
     .catch(() => renderList([]));
 
-  // add handler
-  form.querySelector('#addEx').addEventListener('click', async ()=>{
-    const name = form.querySelector('#exName').value.trim();
-    if (!name) return;
+ form.querySelector('#addEx').addEventListener('click', async ()=>{
+  const name = form.querySelector('#exName').value.trim();
+  if (!name) return;
 
-    try {
-      if (db && state.user) {
-        await db.collection('users')
-          .doc(state.user.uid)
-          .collection('exercises')
-          .doc(slug(name))
-          .set({ name });
-      } else {
-        const local = ls.get('bs_exercises', DEFAULT_EXERCISES) || [];
-        if (!local.includes(name)) local.push(name);
-        ls.set('bs_exercises', local);
-        state.exercises = local;
-      }
-
-      // cache-bust and reload fresh names
-      _exerciseNamesCache = null;
-      const names = await getExerciseNames();
-      renderList(names);
-      form.querySelector('#exName').value = '';
-
-      // success toast
-      showToast(`Exercise "${name}" added successfully ✅`);
-    } catch(e){
-      alert(e.message);
+  try {
+    if (db && state.user) {
+      // Write to GLOBAL collection (coach-only per rules)
+      await upsertGlobalExercise(null, { name });
+    } else {
+      // Local fallback only for demo mode
+      const local = ls.get('bs_exercises', DEFAULT_EXERCISES) || [];
+      if (!local.includes(name)) local.push(name);
+      ls.set('bs_exercises', local);
+      state.exercises = local;
     }
-  });
+
+    _exerciseNamesCache = null;                 // cache-bust
+    const names = await getExerciseNames();     // reload
+    renderList(names);
+    form.querySelector('#exName').value = '';
+    showToast(`Exercise "${name}" added to global library ✅`);
+  } catch(e){
+    const msg = (e && e.code === 'permission-denied')
+      ? 'Only coaches can add to the global library'
+      : (e.message || 'Could not add exercise');
+    alert(msg);
+  }
+});
 
   page('Exercise Library', [form, list]);
 }
@@ -1491,7 +1523,7 @@ function isCoachUser() {
 }
 
 // Toggle this if you still want athletes to see their *personal* exercises merged in
-const INCLUDE_PERSONAL_EXERCISES = true;
+const INCLUDE_PERSONAL_EXERCISES = false;
 
 // Helper: safely push an unsubscribe and create state.unsub if needed
 function trackUnsub(fn) {

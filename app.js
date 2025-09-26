@@ -1163,11 +1163,12 @@ function CoachPortal(){
   page('Coach Portal', root);
 }
 
-// ---- Template Builder ----
+// ---- Template Builder (with Day-of-Week) ----
 function TemplateBuilder(){
   const root = document.createElement('div');
   const DEFAULT_WEEKS = 4;
   const DAYS = ['ME Upper','DE Upper','DE Lower','ME Lower'];
+  const DOWS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
   root.innerHTML = `
     <h3>Template Builder</h3>
@@ -1176,7 +1177,9 @@ function TemplateBuilder(){
       <label>Weeks <input id="tplWeeks" type="number" min="1" value="${DEFAULT_WEEKS}"/></label>
     </div>
 
-    <div class="muted small mt">Click a Movement cell and start typing to search your Exercise Library.</div>
+    <div class="muted small mt">
+      Choose a Day of Week for each session (optional), then type/select a Movement.
+    </div>
     <div class="divider"></div>
 
     <!-- Shared datalist used by all Movement inputs -->
@@ -1187,7 +1190,7 @@ function TemplateBuilder(){
         <thead>
           <tr>
             <th style="white-space:nowrap;">Week</th>
-            ${DAYS.map(d=>`<th>${d}<div class="muted tiny">Movement / Sets×Reps / Load / Notes</div></th>`).join('')}
+            ${DAYS.map(d=>`<th>${d}<div class="muted tiny">Day • Movement • Sets×Reps • Load • Notes</div></th>`).join('')}
           </tr>
         </thead>
         <tbody id="tplBody"></tbody>
@@ -1218,80 +1221,119 @@ function TemplateBuilder(){
   const body = root.querySelector('#tplBody');
   const weeksInput = root.querySelector('#tplWeeks');
 
+  function daySelectHtml(){
+    return `
+      <select class="slot dow" data-field="dow">
+        <option value="">— day —</option>
+        ${DOWS.map((n,i)=> `<option value="${i}">${n}</option>`).join('')}
+      </select>
+    `;
+  }
+
   function createWeekRow(weekNumber){
     const tr = document.createElement('tr');
     tr.innerHTML = `<td class="bold" style="white-space:nowrap;">Week ${weekNumber}</td>` + DAYS.map(()=>`
       <td class="cell" data-week="${weekNumber}">
-        <!-- Movement: type-ahead from datalist -->
-        <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement"/>
-        <!-- The rest remain contenteditable for quick free text -->
+        <div class="row" style="gap:.5rem; align-items:center;">
+          ${daySelectHtml()}
+          <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement" style="min-width:14em;"/>
+        </div>
         <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
         <div class="slot" contenteditable="true" data-field="load" placeholder="Load"></div>
         <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
+      </td>
+    `).join('');
+    return tr;
+  }
 
-// ---- Saved Templates ----
-function SavedTemplates(){
-  const root = document.createElement('div');
-  root.innerHTML = `
-    <h3>Saved Templates</h3>
-    <div id="tplList" class="list"></div>
-  `;
-  page('Saved Templates', root);
+  function currentWeekCount(){ return body.querySelectorAll('tr').length; }
 
-  (async ()=>{
-    if(!db) return root.querySelector('#tplList').innerHTML = `<div class="item">Firebase required.</div>`;
-    const list = root.querySelector('#tplList');
-    const code = 'BARN'; // or read from your Trainer Code selector
+  function addWeek(){
+    const next = currentWeekCount() + 1;
+    body.appendChild(createWeekRow(next));
+    weeksInput.value = String(next);
+  }
+
+  function removeLastWeek(){
+    const rows = body.querySelectorAll('tr');
+    if (rows.length <= 1) { alert('At least 1 week is required.'); return; }
+    body.removeChild(rows[rows.length - 1]);
+    weeksInput.value = String(rows.length - 1);
+  }
+
+  function setWeekCount(n){
+    n = Math.max(1, Math.floor(n || 1));
+    const cur = currentWeekCount();
+    if (n === cur) return;
+    if (n > cur){
+      for (let i = cur + 1; i <= n; i++) body.appendChild(createWeekRow(i));
+    } else {
+      for (let i = cur; i > n; i--){
+        const last = body.querySelector('tr:last-child');
+        if (last) body.removeChild(last);
+      }
+    }
+    weeksInput.value = String(n);
+  }
+
+  // Initial render
+  for (let w = 1; w <= DEFAULT_WEEKS; w++) body.appendChild(createWeekRow(w));
+
+  // Buttons + Weeks input
+  root.querySelector('#addWeek').addEventListener('click', addWeek);
+  root.querySelector('#removeWeek').addEventListener('click', removeLastWeek);
+  weeksInput.addEventListener('change', () => setWeekCount(parseInt(weeksInput.value || '1', 10)));
+
+  // Save template (coach-only write)
+  root.querySelector('#saveTemplate').addEventListener('click', async ()=>{
+    const name = root.querySelector('#tplName').value.trim() || 'Untitled';
+    if(!db || !state.user) return alert('Login + Firebase required.');
+    const trainerCode = 'BARN';
+
+    // Serialize cells → array of {week, day, dow, movement, setsreps, load, notes}
+    const grid = [];
+    const rows = [...body.querySelectorAll('tr')];
+    rows.forEach((tr, idx)=>{
+      const week = idx + 1;
+      const cells = [...tr.querySelectorAll('td.cell')];
+      cells.forEach((td, cIdx)=>{
+        const dowRaw = td.querySelector('[data-field="dow"]')?.value ?? '';
+        const dow = dowRaw === '' ? null : Number(dowRaw); // 0..6 or null
+
+        const rec = {
+          week,
+          day: DAYS[cIdx],
+          dow, // NEW
+          movement: td.querySelector('[data-field="movement"]')?.value?.trim() || '',
+          setsreps: td.querySelector('[data-field="setsreps"]')?.innerText.trim() || '',
+          load:     td.querySelector('[data-field="load"]')?.innerText.trim() || '',
+          notes:    td.querySelector('[data-field="notes"]')?.innerText.trim() || ''
+        };
+        // skip completely empty cells
+        if(rec.movement || rec.setsreps || rec.load || rec.notes || rec.dow != null) grid.push(rec);
+      });
+    });
 
     try{
-      const snap = await db.collection('templates').doc(code).collection('defs').orderBy('createdAt','desc').get();
-      if (snap.empty){ list.innerHTML = `<div class="item">No templates yet.</div>`; return; }
-
-      // Preload user options
-      const usersSel = document.createElement('select'); usersSel.innerHTML = `<option value="">— select user —</option>`;
-      const users = await db.collection('users').limit(200).get();
-      users.forEach(u=> {
-        const d = u.data(); const opt = document.createElement('option');
-        opt.value = u.id; opt.textContent = d.username || d.email || u.id.slice(0,6);
-        usersSel.appendChild(opt);
+      const weeksCount = currentWeekCount(); // authoritative
+      const ref = db.collection('templates').doc(trainerCode).collection('defs').doc();
+      await ref.set({
+        name,
+        weeksPerMesocycle: weeksCount,
+        mesocycles: 1,
+        grid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: state.user.uid
       });
+      root.querySelector('#tplMsg').textContent = `Saved "${name}" (${grid.length} items, ${weeksCount} week${weeksCount>1?'s':''}).`;
+      alert('Template saved.');
+      go('/templates');
+    }catch(e){ alert(e.message); }
+  });
 
-      snap.forEach(doc=>{
-        const t = doc.data();
-        const row = document.createElement('div'); row.className='item';
-        row.innerHTML = `
-          <div class="grow">
-            <div class="bold">${t.name}</div>
-            <div class="muted small">${t.grid?.length||0} items • Weeks: ${t.weeksPerMesocycle || '?'}</div>
-          </div>
-          <div class="row">
-            <input type="date" class="startDate" />
-            <span class="userSlot"></span>
-            <button class="btn small assignBtn">Assign</button>
-          </div>
-        `;
-        // clone a users select per row
-        const sel = usersSel.cloneNode(true);
-        row.querySelector('.userSlot').appendChild(sel);
-
-        row.querySelector('.assignBtn').addEventListener('click', async ()=>{
-          const uid = sel.value;
-          const start = row.querySelector('.startDate').value || new Date().toISOString().slice(0,10);
-          if(!uid) return alert('Select a user.');
-          try{
-            await assignTemplateToUser({ templateId: doc.id, template: t, trainerCode: code, userId: uid, startDate: start });
-            alert('Assigned!');
-          }catch(e){ alert(e.message); }
-        });
-
-        list.appendChild(row);
-      });
-    }catch(e){
-      console.warn(e);
-      root.querySelector('#tplList').innerHTML = `<div class="item">Error: ${e.message}</div>`;
-    }
-  })();
+  page('Template Builder', root);
 }
+
 
 // ---- Athlete View ----
 function AthleteView(){

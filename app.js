@@ -1366,6 +1366,99 @@ function TemplateBuilder(){
   page('Template Builder', root);
 }
 
+// ---- Saved Templates ----
+function SavedTemplates(){
+  const root = document.createElement('div');
+  root.innerHTML = `
+    <h3>Saved Templates</h3>
+    <div id="tplList" class="list"></div>
+  `;
+  page('Saved Templates', root);
+
+  (async ()=>{
+    const list = root.querySelector('#tplList');
+    if(!db || !state.user){
+      list.innerHTML = `<div class="item">Firebase required.</div>`;
+      return;
+    }
+
+    const trainerCode = 'BARN'; // adjust if you support multiple codes
+
+    try{
+      // Load templates
+      const snap = await db.collection('templates')
+        .doc(trainerCode)
+        .collection('defs')
+        .orderBy('createdAt','desc')
+        .get();
+
+      if (snap.empty){
+        list.innerHTML = `<div class="item">No templates yet. Create one in Template Builder.</div>`;
+        return;
+      }
+
+      // Preload users for assignment
+      const usersSelProto = document.createElement('select');
+      usersSelProto.innerHTML = `<option value="">— select user —</option>`;
+      const users = await db.collection('users').limit(300).get();
+      users.forEach(u=>{
+        const d = u.data() || {};
+        const opt = document.createElement('option');
+        opt.value = u.id;
+        opt.textContent = d.username || d.email || u.id.slice(0,6);
+        usersSelProto.appendChild(opt);
+      });
+
+      snap.forEach(doc=>{
+        const t = doc.data() || {};
+        const row = document.createElement('div'); row.className='item';
+        row.innerHTML = `
+          <div class="grow">
+            <div class="bold">${t.name || '(untitled)'}</div>
+            <div class="muted small">
+              Items: ${t.grid?.length || 0}${t.weeksPerMesocycle ? ` • Weeks: ${t.weeksPerMesocycle}` : ''}
+            </div>
+          </div>
+          <div class="row" style="gap:.5rem; align-items:center;">
+            <input type="date" class="startDate" />
+            <span class="userSlot"></span>
+            <button class="btn small assignBtn">Assign</button>
+          </div>
+        `;
+
+        // Clone per-row user select
+        const sel = usersSelProto.cloneNode(true);
+        row.querySelector('.userSlot').appendChild(sel);
+
+        // Wire assignment
+        row.querySelector('.assignBtn').addEventListener('click', async ()=>{
+          const uid = sel.value;
+          const start = row.querySelector('.startDate').value || new Date().toISOString().slice(0,10);
+          if(!uid) return alert('Select a user to assign.');
+
+          try{
+            await assignTemplateToUser({
+              templateId: doc.id,
+              template: t,
+              trainerCode,
+              userId: uid,
+              startDate: start
+            });
+            alert('Assigned!');
+          }catch(e){
+            alert(e.message || 'Failed to assign');
+          }
+        });
+
+        list.appendChild(row);
+      });
+    }catch(e){
+      console.warn(e);
+      list.innerHTML = `<div class="item">Error: ${e.message}</div>`;
+    }
+  })();
+}
+
 
 // ---- Athlete View ----
 function AthleteView(){

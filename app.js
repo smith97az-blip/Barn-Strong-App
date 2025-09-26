@@ -13,6 +13,57 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+function nextDateForDowOnOrAfter(anchorISO, dow /*0=Sun..6=Sat*/){
+  const d = new Date(anchorISO);
+  const cur = d.getDay();
+  const add = ( (Number(dow) - cur) + 7 ) % 7;  // 0..6 days
+  d.setDate(d.getDate() + add);
+  return d.toISOString().slice(0,10);
+}
+
+// --- Global Exercise Library helpers (compat SDK) ---
+
+async function upsertGlobalExercise(id, data) {
+  // data: { name, category?, description?, tags? }
+  const db = firebase.firestore();
+  const uid = firebase.auth().currentUser?.uid || null;
+
+  const ref = id
+    ? db.collection("exercises").doc(id)
+    : db.collection("exercises").doc(); // auto-ID
+
+  const name = (data.name || "").trim();
+  if (!name) throw new Error("Exercise name required");
+
+  const now = firebase.firestore.FieldValue.serverTimestamp();
+  const payload = {
+    ...data,
+    name,
+    nameLower: name.toLowerCase(),
+    updatedAt: now,
+    ...(id ? {} : { createdAt: now, createdBy: uid }),
+  };
+
+  await ref.set(payload, { merge: true });
+  return ref.id;
+}
+
+// Delete by *name* (handy if your UI currently only has the name, not the id)
+async function deleteGlobalExerciseByName(name) {
+  const db = firebase.firestore();
+  const key = (name || "").trim().toLowerCase();
+  if (!key) throw new Error("Exercise name required");
+
+  // Look up the doc by nameLower
+  const q = await db.collection("exercises")
+    .where("nameLower", "==", key)
+    .limit(1).get();
+
+  if (q.empty) throw new Error("Exercise not found");
+
+  await q.docs[0].ref.delete();
+}
+
 // ---- Toast helper ----
 function showToast(msg){
   let t = document.getElementById('toast');
@@ -39,30 +90,17 @@ function showToast(msg){
 
 async function deleteExerciseByName(name){
   if (!name) return;
-  // Confirm UX
-  if (!confirm(`Delete "${name}" from your exercise library?`)) return;
+  if (!confirm(`Delete "${name}" from the global exercise library?`)) return;
 
-  if (db && state?.user?.uid){
-    // Firestore path: users/{uid}/exercises/{slug}
-    const id = slug(name);
-    try {
-      await db.collection('users')
-        .doc(state.user.uid)
-        .collection('exercises')
-        .doc(id)
-        .delete();
-      // state.exercises is driven by onSnapshot, so it will refresh automatically
-    } catch(e){
-      alert(e.message || 'Failed to delete');
-    }
-  } else {
-    // Local storage fallback
-    const list = ls.get('bs_exercises', []);
-    const next = list.filter(n => n !== name);
-    ls.set('bs_exercises', next);
-    state.exercises = next;
+  try {
+    await deleteGlobalExerciseByName(name); // uses the helper you already added
+    // state.exercises will refresh via subscribeExercises()
+    showToast(`Exercise "${name}" deleted`);
+  } catch (e){
+    alert(e.message || 'Failed to delete');
   }
 }
+
 
 
 function addDaysISO(iso, n){
@@ -74,20 +112,30 @@ function addDaysISO(iso, n){
 // Build a { [date]: { title, blocks, status } } map from a week + startDate
 function planSessionsToDates(sessions = [], startDate){
   const map = {};
-  if (!sessions.length) return map;
+  if (!sessions.length || !startDate) return map;
   let idx = 0;
 
   sessions.forEach((s) => {
-    // If coach set an explicit date, use it; otherwise lay out sequentially from startDate
-    const date =
-      (s.date && /^\d{4}-\d{2}-\d{2}$/.test(s.date)) ? s.date
-      : (startDate ? addDaysISO(startDate, idx) : null);
+    let date = null;
 
-    if (!date) return;          // skip if we truly have no date anchor
+    if (s.date && /^\d{4}-\d{2}-\d{2}$/.test(s.date)) {
+      date = s.date;  // explicit date wins
+    } else if (s.dow != null && !isNaN(Number(s.dow))) {
+      // place on the selected weekday on/after startDate
+      date = nextDateForDowOnOrAfter(startDate, Number(s.dow));
+    } else {
+      // legacy: sequential placement from startDate
+      date = addDaysISO(startDate, idx);
+    }
+
+    // avoid collisions (two sessions same day) by bumping forward
+    while (map[date]) date = addDaysISO(date, 1);
+
     map[date] = {
       title: s.title || `Session ${idx+1}`,
       blocks: s.blocks || [],
-      status: 'planned'
+      status: s.status || 'planned',
+      date
     };
     idx++;
   });
@@ -112,21 +160,21 @@ async function writePlannedDaysToFirestore(uid, map){
   await batch.commit();
 }
 
-// Assign Template → User (resolved)
+// Assign Template → User (respects DOW)
 async function assignTemplateToUser({ templateId, template, trainerCode, userId, startDate }){
-  // 1) Materialize template grid into programs/{trainerCode}/weeks/*
-  //    Group rows by week and build sessions arrays.
-  const weeksMap = {}; // week -> sessions[]
+  // Build week → sessions[] from template.grid
+  const weeksMap = {}; // weekNumber -> sessions[]
 
   (template.grid || []).forEach(cell => {
     const w = Number(cell.week);
     if (!weeksMap[w]) weeksMap[w] = [];
 
-    // One "session" per day cell if it has content
-    if (cell.movement || cell.setsreps || cell.load || cell.notes) {
+    // one session per non-empty cell
+    if (cell.movement || cell.setsreps || cell.load || cell.notes || (cell.dow != null)) {
       weeksMap[w].push({
         title: `${cell.day}`,
-        date: null, // left null; UI can place relative to assignment startDate
+        date: null,                 // left null; planning computes from DOW
+        dow: (cell.dow != null && !isNaN(Number(cell.dow))) ? Number(cell.dow) : null, // 0..6 or null
         blocks: [{
           name:   cell.movement || '',
           sets:   parseInt((cell.setsreps || '').split('x')[0] || '') || null,
@@ -138,7 +186,7 @@ async function assignTemplateToUser({ templateId, template, trainerCode, userId,
     }
   });
 
-  // 2) Write weeks
+  // Write weeks
   const batch = db.batch();
   Object.entries(weeksMap).forEach(([weekNumber, sessions]) => {
     const ref = db.collection('programs')
@@ -146,12 +194,12 @@ async function assignTemplateToUser({ templateId, template, trainerCode, userId,
     batch.set(ref, { weekNumber: Number(weekNumber), sessions }, { merge: true });
   });
 
-  // 3) Link assignment to the user
+  // Link assignment to the user
   batch.set(
     db.collection('assignments').doc(userId),
     {
       trainerCode,
-      weekNumber: 1,
+      weekNumber: 1, // you can change this if you assign other weeks
       startDate,
       templateId,
       assignedAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -161,6 +209,7 @@ async function assignTemplateToUser({ templateId, template, trainerCode, userId,
 
   await batch.commit();
 }
+
 
 // ---- Modal Helper ----
 function openModal(contentHTML){
@@ -194,27 +243,40 @@ function defaultOffsetsForCount(n){
 
 function buildSessionsMapFromWeeks(weeks, startDateISO){
   const map = {};
-  if (!weeks || !weeks.length) return map;
+  if (!weeks || !weeks.length || !startDateISO) return map;
 
-  const base = startDateISO || new Date().toISOString().slice(0,10);
-
-  // Sort by numeric weekNumber (tolerates doc id strings)
+  // Sort by numeric weekNumber
   const ordered = weeks.slice().sort((a,b)=>
     (Number(a.weekNumber)||0) - (Number(b.weekNumber)||0)
   );
 
   ordered.forEach((w, wi)=>{
     const sessions = w.sessions || [];
-    const offsets = defaultOffsetsForCount(sessions.length);
+    const weekAnchor = addDaysISO(startDateISO, wi * 7);
 
     sessions.forEach((s, i)=>{
-      // If coach provided an explicit date in the session, use it. Otherwise, compute.
-      const computed = addDaysISO(addDaysISO(base, wi * 7), offsets[i] ?? i);
-      const date = s.date || computed;
+      let date = null;
+
+      if (s.date && /^\d{4}-\d{2}-\d{2}$/.test(s.date)) {
+        date = s.date;
+      } else if (s.dow != null && !isNaN(Number(s.dow))) {
+        // place within this week on the selected DOW
+        date = nextDateForDowOnOrAfter(weekAnchor, Number(s.dow));
+      } else {
+        // fallback: spread through the week with friendly offsets
+        const offsets = defaultOffsetsForCount(sessions.length);
+        const off = offsets[i] ?? i;
+        date = addDaysISO(weekAnchor, off);
+      }
+
+      // avoid same-day collision
+      while (map[date]) date = addDaysISO(date, 1);
+
       map[date] = {
-        ...s,
+        ...(s || {}),
         date,
-        title: s.title || `W${w.weekNumber || (wi+1)} S${i+1}`
+        title: s.title || `W${w.weekNumber || (wi+1)} S${i+1}`,
+        status: s.status || 'planned'
       };
     });
   });
@@ -260,12 +322,12 @@ function attachProgramSync(uid){
 }
 
 function rerenderIfProgramPages(){
-  const path = location.hash.replace('#','') || '/login';
-  // Lightweight: force a re-render if the user is on a page that shows program/sessions.
+  const path = currentRoutePath();
   if (['/dashboard','/calendar','/today','/program'].includes(path)) {
     render();
   }
 }
+
 
 
 function calcStreak(logs){
@@ -413,23 +475,28 @@ function CalendarPage(){
 
 // ---- Exercise Library → dropdowns ----
 let _exerciseNamesCache = null;
+
 async function loadExerciseLibraryNames(){
   const names = new Set((typeof DEFAULT_EXERCISES !== 'undefined' ? DEFAULT_EXERCISES : []));
   try {
-    if (db && state?.user?.uid) {
-      const snap = await db.collection('users').doc(state.user.uid).collection('exercises').get();
+    if (db) {
+      // Read from GLOBAL library only
+      const snap = await db.collection('exercises').orderBy('nameLower').get();
       snap.forEach(d => d.data()?.name && names.add(d.data().name));
     } else {
+      // Local fallback
       (ls.get('bs_exercises', []) || []).forEach(n => names.add(n));
     }
   } catch(e){ console.warn('loadExerciseLibraryNames', e); }
-  return [...names].sort();
+  return [...names].sort((a,b)=> a.localeCompare(b, undefined, {sensitivity:'base'}));
 }
+
 async function getExerciseNames() {
   if (_exerciseNamesCache) return _exerciseNamesCache;
   _exerciseNamesCache = await loadExerciseLibraryNames();
   return _exerciseNamesCache;
 }
+
 function makeExerciseSelect(className='exname', options=[]){
   const sel = document.createElement('select');
   sel.className = className;
@@ -470,6 +537,13 @@ function page(title, body){
   else if(Array.isArray(body)){ body.forEach(x=>card.appendChild(x)); }
   root.appendChild(card);
 }
+
+// Returns just the route path (no query), e.g. "#/athlete?uid=123" -> "/athlete"
+function currentRoutePath(){
+  const hash = location.hash || '';
+  return (hash.split('?')[0] || '#/login').replace('#','') || '/login';
+}
+
 
 // ---- Analytics ----
 function logEvent(name, data = {}) {
@@ -605,15 +679,11 @@ function Dashboard(){
   }, 10);
 }
 
-// ---- Today's Session ----
-
+// ---- Today's Session (timer + body weight) ----
 function TodaysSession(){
   const today = new Date().toISOString().slice(0,10);
   const sess = (state.sessionsMap || {})[today];
   const el = document.createElement('div');
-
-  const header = document.createElement('div');
-  header.className = 'row';
 
   if(!sess){
     const next = findNextSession(state.sessionsMap || {});
@@ -627,23 +697,124 @@ function TodaysSession(){
     return page("Today's Session", el);
   }
 
-  const status = sess.status || 'planned';
-  header.innerHTML = `
-    <div class="chip">Status: ${status}</div>
-    <button class="btn small" id="startBtn">Start</button>
-    <button class="btn small" id="completeBtn">Complete</button>
-    <a href="#/unscheduled" class="btn small ghost">Unscheduled Session</a>
-  `;
+  // --- Timer state ---
+  state.__todayTimer = state.__todayTimer || { id:null, startMs:null };
+  function clearTimer(){ if (state.__todayTimer.id){ try{ clearInterval(state.__todayTimer.id);}catch{} } state.__todayTimer.id=null; }
+  function formatHMS(ms){ const s=Math.max(0,Math.floor(ms/1000)); const hh=String(Math.floor(s/3600)).padStart(2,'0'); const mm=String(Math.floor((s%3600)/60)).padStart(2,'0'); const ss=String(s%60).padStart(2,'0'); return `${hh}:${mm}:${ss}`; }
+  function startTimer(fromMs){
+    state.__todayTimer.startMs = fromMs;
+    const chip = el.querySelector('#timerChip');
+    clearTimer();
+    const tick = ()=>{ const elapsed = Date.now() - state.__todayTimer.startMs; if (chip) chip.textContent = 'Time: ' + formatHMS(elapsed); };
+    tick(); state.__todayTimer.id = setInterval(tick, 1000);
+  }
+
+  // Firestore write helper (merge)
+  async function setDayStatus(patch){
+    state.sessionsMap[today] = Object.assign({}, state.sessionsMap[today] || {}, patch, { date: today });
+    if (db && state.user){
+      try{
+        const ref = db.collection('sessions').doc(state.user.uid).collection('days').doc(today);
+        const base = { title: sess.title || `Session`, blocks: sess.blocks || [] };
+        await ref.set(Object.assign({}, base, patch), { merge:true });
+      }catch(e){ console.warn('setDayStatus', e); showToast(e.message || 'Failed to update'); }
+    }
+    paintHeader();
+  }
+
+  // --- Header with Body Weight + timer + buttons ---
+  function paintHeader(){
+    const cur = state.sessionsMap[today] || {};
+    const status = cur.status || 'planned';
+    const started = !!cur.startedAtMs;
+    const completed = status === 'completed';
+
+    const header = el.querySelector('#todayHeader');
+    header.innerHTML = `
+      <div class="row" style="gap:.5rem; align-items:center; flex-wrap:wrap;">
+        <label class="small" style="display:flex; align-items:center; gap:.5rem;">
+          Body Weight (lb)
+          <input id="bwInput" type="number" step="0.1" min="0" placeholder="e.g. 185" style="width:7rem"
+                 value="${cur.bodyWeight != null ? cur.bodyWeight : ''}">
+        </label>
+        <button class="btn small ghost" id="bwSave">Save</button>
+
+        <span class="chip" id="statusChip">Status: ${status}</span>
+        <span class="chip" id="timerChip">${completed && cur.durationSec != null ? 'Time: ' + formatHMS(cur.durationSec*1000) : 'Time: 00:00:00'}</span>
+        <button class="btn small" id="startBtn" ${status==='in_progress'||status==='completed' ? 'disabled':''}>Start</button>
+        <button class="btn small" id="completeBtn" ${status==='completed' ? 'disabled':''}>Complete</button>
+        <a href="#/unscheduled" class="btn small ghost">Unscheduled Session</a>
+      </div>
+    `;
+
+    // Body weight save handlers
+    const bwInput = header.querySelector('#bwInput');
+    const bwSave  = header.querySelector('#bwSave');
+    const saveBW = async () => {
+      const v = parseFloat(bwInput.value);
+      const bodyWeight = isNaN(v) ? null : v;
+      await setDayStatus({ bodyWeight });
+      if (!isNaN(v)) showToast('Body weight saved');
+    };
+    bwSave?.addEventListener('click', saveBW);
+    bwInput?.addEventListener('change', saveBW);
+    bwInput?.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); saveBW(); } });
+
+    // Start / Complete
+    header.querySelector('#startBtn')?.addEventListener('click', async ()=>{
+      const v = parseFloat(bwInput?.value);
+      const bodyWeight = isNaN(v) ? (state.sessionsMap[today]?.bodyWeight ?? null) : v;
+      const startMs = Date.now();
+      await setDayStatus({
+        status: 'in_progress',
+        startedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null,
+        startedAtMs: startMs,
+        ...(bodyWeight!=null ? { bodyWeight } : {})
+      });
+      startTimer(startMs);
+      showToast('Session started');
+      logEvent('session_started', { date: today });
+    });
+
+    header.querySelector('#completeBtn')?.addEventListener('click', async ()=>{
+      const v = parseFloat(bwInput?.value);
+      const bodyWeight = isNaN(v) ? (state.sessionsMap[today]?.bodyWeight ?? null) : v;
+
+      const cur2 = state.sessionsMap[today] || {};
+      const startMs = cur2.startedAtMs || Date.now();
+      const endMs = Date.now();
+      const durationSec = Math.max(0, Math.round((endMs - startMs)/1000));
+
+      clearTimer();
+      await setDayStatus({
+        status: 'completed',
+        completedAt: firebase?.firestore?.FieldValue?.serverTimestamp?.() || null,
+        completedAtMs: endMs,
+        durationSec,
+        ...(bodyWeight!=null ? { bodyWeight } : {})
+      });
+      const chip = el.querySelector('#timerChip');
+      if (chip) chip.textContent = 'Time: ' + formatHMS(durationSec*1000);
+      showToast('Session completed');
+      logEvent('session_completed', { date: today, durationSec, bodyWeight });
+    });
+
+    // Resume ticking if needed
+    clearTimer();
+    if (status === 'in_progress' && started) startTimer(state.sessionsMap[today].startedAtMs);
+  }
+
+  // --- Build page ---
+  const header = document.createElement('div');
+  header.id = 'todayHeader';
   el.appendChild(header);
 
   const list = document.createElement('ul'); list.className='list';
   const blocks = sess.blocks || sess.planned || sess.exercises || [];
-
   blocks.forEach(ex=>{
     const setCount = ex.sets || ex.setCount || 1;
     const plannedReps = ex.reps ?? ex.targetReps ?? '';
-    const rows = document.createElement('div');
-    rows.className = 'grow';
+    const rows = document.createElement('div'); rows.className = 'grow';
 
     let html = `<div class="bold">${ex.name}</div><div class="muted small">${setCount} x ${plannedReps}${ex.weight? ' @ '+ex.weight+' lb':''}</div>`;
     for(let i=1;i<=setCount;i++){
@@ -675,10 +846,20 @@ function TodaysSession(){
             await db.collection('logs').doc(state.user.uid).collection('entries').add({
               date: today, exercise: ex.name, weight: w, reps: r, sets: 1, source:'set', createdAt: firebase.firestore.FieldValue.serverTimestamp()
             });
-            await db.collection('sessions').doc(state.user.uid).collection('days').doc(today).set({ status: 'in_progress' }, { merge: true });
+            if ((state.sessionsMap[today]||{}).status !== 'in_progress'){
+              const startMs = Date.now();
+              await setDayStatus({
+                status: 'in_progress',
+                startedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                startedAtMs: startMs
+              });
+              startTimer(startMs);
+            }
           }catch(e){ console.warn(e); }
         }else{
           const local = ls.get('bs_logs',[]); local.unshift({date: today, exercise: ex.name, weight: w, reps: r, sets: 1}); ls.set('bs_logs', local);
+          state.sessionsMap[today] && (state.sessionsMap[today].status = 'in_progress');
+          if (!state.__todayTimer.id) startTimer(Date.now());
         }
         logEvent('set_logged', { date: today, exercise: ex.name, weight: w, reps: r, set: setNum });
         btn.textContent = 'Logged ✓';
@@ -688,7 +869,28 @@ function TodaysSession(){
 
   el.appendChild(list);
   page("Today's Session", el);
+
+  // Initial header paint
+  paintHeader();
+
+  // Resume from Firestore on load (to restore body weight / status / timer)
+  (async ()=>{
+    if (!db || !state.user) return;
+    try{
+      const ref = db.collection('sessions').doc(state.user.uid).collection('days').doc(today);
+      const doc = await ref.get();
+      if (!doc.exists) return;
+      const d = doc.data() || {};
+      const cur = state.sessionsMap[today] || {};
+      state.sessionsMap[today] = Object.assign({}, cur, d, { date: today });
+      paintHeader();
+    }catch(e){
+      console.warn('resume today doc', e);
+    }
+  })();
 }
+
+
 
 // ---- Unscheduled Session ----
 function UnscheduledSession(){
@@ -874,37 +1076,34 @@ function ExerciseLibrary(){
     })
     .catch(() => renderList([]));
 
-  // add handler
-  form.querySelector('#addEx').addEventListener('click', async ()=>{
-    const name = form.querySelector('#exName').value.trim();
-    if (!name) return;
+ form.querySelector('#addEx').addEventListener('click', async ()=>{
+  const name = form.querySelector('#exName').value.trim();
+  if (!name) return;
 
-    try {
-      if (db && state.user) {
-        await db.collection('users')
-          .doc(state.user.uid)
-          .collection('exercises')
-          .doc(slug(name))
-          .set({ name });
-      } else {
-        const local = ls.get('bs_exercises', DEFAULT_EXERCISES) || [];
-        if (!local.includes(name)) local.push(name);
-        ls.set('bs_exercises', local);
-        state.exercises = local;
-      }
-
-      // cache-bust and reload fresh names
-      _exerciseNamesCache = null;
-      const names = await getExerciseNames();
-      renderList(names);
-      form.querySelector('#exName').value = '';
-
-      // success toast
-      showToast(`Exercise "${name}" added successfully ✅`);
-    } catch(e){
-      alert(e.message);
+  try {
+    if (db && state.user) {
+      // Write to GLOBAL collection (coach-only per rules)
+      await upsertGlobalExercise(null, { name });
+    } else {
+      // Local fallback only for demo mode
+      const local = ls.get('bs_exercises', DEFAULT_EXERCISES) || [];
+      if (!local.includes(name)) local.push(name);
+      ls.set('bs_exercises', local);
+      state.exercises = local;
     }
-  });
+
+    _exerciseNamesCache = null;                 // cache-bust
+    const names = await getExerciseNames();     // reload
+    renderList(names);
+    form.querySelector('#exName').value = '';
+    showToast(`Exercise "${name}" added to global library ✅`);
+  } catch(e){
+    const msg = (e && e.code === 'permission-denied')
+      ? 'Only coaches can add to the global library'
+      : (e.message || 'Could not add exercise');
+    alert(msg);
+  }
+});
 
   page('Exercise Library', [form, list]);
 }
@@ -918,8 +1117,10 @@ function CoachPortal(){
       <label>Trainer Code
         <select id="trainerCode"></select>
       </label>
-      <label>Assign to User
-        <select id="assignUser"><option value="">— select user —</option></select>
+      <label>Assign to Users
+        <select id="assignUsers" multiple size="8" style="min-height: 8.5em;">
+        </select>
+        <div class="tiny muted">Tip: Cmd/Ctrl-click to select multiple.</div>
       </label>
     </div>
 
@@ -944,6 +1145,13 @@ function CoachPortal(){
     <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
   `;
+
+  function getSelectedUserIds(){
+  const sel = root.querySelector('#assignUsers');
+  return Array.from(sel.selectedOptions || [])
+    .map(o => o.value)
+    .filter(Boolean);
+}
 
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
   root.querySelector('#openTemplateBuilder')?.addEventListener('click', ()=> go('/template-builder'));
@@ -1045,36 +1253,46 @@ function CoachPortal(){
     sessions.push(...copies); render();
   });
 
-  root.querySelector('#publish').addEventListener('click', async()=>{
-    const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
-    const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
-    const startDate = root.querySelector('#startDate').value || null;
-    const targetUser = root.querySelector('#assignUser').value || '';
+ root.querySelector('#publish').addEventListener('click', async()=>{
+  const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
+  const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
+  const startDate = root.querySelector('#startDate').value || new Date().toISOString().slice(0,10);
+  const targetUsers = getSelectedUserIds(); // <-- array
 
-    if(!sessions.length) return alert('Add at least one session.');
-    if(!db || !state.user) return alert('Login + Firebase required');
+  if(!sessions.length) return alert('Add at least one session.');
+  if(!db || !state.user) return alert('Login + Firebase required');
 
-    try{
-      await db.collection('programs').doc(trainerCode).collection('weeks').doc(String(weekNumber))
-        .set({ weekNumber, sessions }, { merge: true });
+  try{
+    // Publish/update the week once
+    await db.collection('programs').doc(trainerCode)
+      .collection('weeks').doc(String(weekNumber))
+      .set({ weekNumber, sessions }, { merge: true });
 
-      if(targetUser){
-        await db.collection('assignments').doc(targetUser).set({
-          trainerCode, weekNumber, startDate: startDate || new Date().toISOString().slice(0,10),
+    // Assign to all selected users (batched)
+    if(targetUsers.length){
+      const batch = db.batch();
+      targetUsers.forEach(uid=>{
+        const ref = db.collection('assignments').doc(uid);
+        batch.set(ref, {
+          trainerCode, weekNumber, startDate,
           assignedAt: firebase.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
-      }
+      });
+      await batch.commit();
+    }
 
-      alert('Published!');
-      root.querySelector('#out').textContent =
-        `Published week ${weekNumber} (${sessions.length} sessions)` + (targetUser ? ' and assigned to user.' : '.');
-    }catch(e){ alert(e.message); }
-  });
+    alert(`Published week ${weekNumber} (${sessions.length} sessions)` +
+          (targetUsers.length ? ` and assigned to ${targetUsers.length} user(s).` : '.'));
+    root.querySelector('#out').textContent =
+      `Published week ${weekNumber} • ${sessions.length} sessions` +
+      (targetUsers.length ? ` • Assigned to ${targetUsers.length}` : '');
+  }catch(e){ alert(e.message); }
+});
 
   async function populateLookups(){
     const codeSel = root.querySelector('#trainerCode');
-    const userSel = root.querySelector('#assignUser');
-    codeSel.innerHTML = ``; userSel.innerHTML = `<option value="">— select user —</option>`;
+    const userSel = root.querySelector('#assignUsers');
+    codeSel.innerHTML = ``; userSel.innerHTML = ``;
 
     if(db && state.user){
       const codes = await db.collection('trainers').get();
@@ -1105,11 +1323,12 @@ function CoachPortal(){
   page('Coach Portal', root);
 }
 
-// ---- Template Builder ----
+// ---- Template Builder (with Day-of-Week) ----
 function TemplateBuilder(){
   const root = document.createElement('div');
   const DEFAULT_WEEKS = 4;
   const DAYS = ['ME Upper','DE Upper','DE Lower','ME Lower'];
+  const DOWS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
   root.innerHTML = `
     <h3>Template Builder</h3>
@@ -1118,97 +1337,155 @@ function TemplateBuilder(){
       <label>Weeks <input id="tplWeeks" type="number" min="1" value="${DEFAULT_WEEKS}"/></label>
     </div>
 
-    <div class="muted small mt">Click cells to edit. Use exercise dropdowns in the row editor to add exercises.</div>
+    <div class="muted small mt">
+      Choose a Day of Week for each session (optional), then type/select a Movement.
+    </div>
     <div class="divider"></div>
+
+    <!-- Shared datalist used by all Movement inputs -->
+    <datalist id="exOptions"></datalist>
 
     <div class="scroll-x">
       <table class="sheet" id="tplTable">
         <thead>
           <tr>
-            <th>Week</th>
-            ${DAYS.map(d=>`<th>${d}<div class="muted tiny">Movement / Sets×Reps / Load / Notes</div></th>`).join('')}
+            <th style="white-space:nowrap;">Week</th>
+            ${DAYS.map(d=>`<th>${d}<div class="muted tiny">Day • Movement • Sets×Reps • Load • Notes</div></th>`).join('')}
           </tr>
         </thead>
         <tbody id="tplBody"></tbody>
       </table>
     </div>
 
-    <div class="row mt">
+    <div class="row mt" style="gap:.5rem;">
       <button id="addWeek" class="btn small">+ Add Week</button>
-      <button id="saveTemplate" class="btn">Save Template</button>
+      <button id="removeWeek" class="btn small danger">− Remove Last Week</button>
+      <button id="saveTemplate" class="btn" style="margin-left:auto;">Save Template</button>
     </div>
 
     <div id="tplMsg" class="muted small mt"></div>
   `;
 
-  // Render N weeks of rows
-  const body = root.querySelector('#tplBody');
-  function renderWeeks(n){
-    body.innerHTML = '';
-    for(let w=1; w<=n; w++){
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="bold">Week ${w}</td>` + DAYS.map(()=>`
-        <td class="cell" data-week="${w}">
-          <div class="slot" contenteditable="true" data-field="movement" placeholder="Movement"></div>
-          <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
-          <div class="slot" contenteditable="true" data-field="load" placeholder="Load"></div>
-          <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
-        </td>
-      `).join('');
-      body.appendChild(tr);
-    }
-  }
-  renderWeeks(DEFAULT_WEEKS);
+  // Populate the shared datalist from the Exercise Library
+  (async ()=>{
+    try{
+      const names = await getExerciseNames();
+      const dl = root.querySelector('#exOptions');
+      dl.innerHTML = (names || [])
+        .slice()
+        .sort((a,b)=> a.localeCompare(b, undefined, {sensitivity:'base'}))
+        .map(n => `<option value="${n}"></option>`).join('');
+    }catch(e){ console.warn('exOptions load', e); }
+  })();
 
-  // Add week
-  root.querySelector('#addWeek').addEventListener('click', ()=>{
-    const n = body.querySelectorAll('tr').length + 1;
+  const body = root.querySelector('#tplBody');
+  const weeksInput = root.querySelector('#tplWeeks');
+
+ function daySelectHtml(){
+  return `
+      <select class="dow" data-field="dow" title="Select day of week">
+        <option value="">— day —</option>
+        ${DOWS.map((n,i)=> `<option value="${i}">${n}</option>`).join('')}
+      </select>
+  `;
+}
+
+  function createWeekRow(weekNumber){
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="bold">Week ${n}</td>` + DAYS.map(()=>`
-      <td class="cell" data-week="${n}">
-        <div class="slot" contenteditable="true" data-field="movement"></div>
-        <div class="slot" contenteditable="true" data-field="setsreps"></div>
-        <div class="slot" contenteditable="true" data-field="load"></div>
-        <div class="slot" contenteditable="true" data-field="notes"></div>
+    tr.innerHTML = `<td class="bold" style="white-space:nowrap;">Week ${weekNumber}</td>` + DAYS.map(()=>`
+      <td class="cell" data-week="${weekNumber}">
+        <div class="row" style="gap:.75rem; align-items:center;">
+          ${daySelectHtml()}
+          <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement" style="min-width:14em;"/>
+        </div>
+        <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
+        <div class="slot" contenteditable="true" data-field="load" placeholder="Load"></div>
+        <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
       </td>
     `).join('');
-    body.appendChild(tr);
-  });
+    return tr;
+  }
+
+  function currentWeekCount(){ return body.querySelectorAll('tr').length; }
+
+  function addWeek(){
+    const next = currentWeekCount() + 1;
+    body.appendChild(createWeekRow(next));
+    weeksInput.value = String(next);
+  }
+
+  function removeLastWeek(){
+    const rows = body.querySelectorAll('tr');
+    if (rows.length <= 1) { alert('At least 1 week is required.'); return; }
+    body.removeChild(rows[rows.length - 1]);
+    weeksInput.value = String(rows.length - 1);
+  }
+
+  function setWeekCount(n){
+    n = Math.max(1, Math.floor(n || 1));
+    const cur = currentWeekCount();
+    if (n === cur) return;
+    if (n > cur){
+      for (let i = cur + 1; i <= n; i++) body.appendChild(createWeekRow(i));
+    } else {
+      for (let i = cur; i > n; i--){
+        const last = body.querySelector('tr:last-child');
+        if (last) body.removeChild(last);
+      }
+    }
+    weeksInput.value = String(n);
+  }
+
+  // Initial render
+  for (let w = 1; w <= DEFAULT_WEEKS; w++) body.appendChild(createWeekRow(w));
+
+  // Buttons + Weeks input
+  root.querySelector('#addWeek').addEventListener('click', addWeek);
+  root.querySelector('#removeWeek').addEventListener('click', removeLastWeek);
+  weeksInput.addEventListener('change', () => setWeekCount(parseInt(weeksInput.value || '1', 10)));
 
   // Save template (coach-only write)
   root.querySelector('#saveTemplate').addEventListener('click', async ()=>{
     const name = root.querySelector('#tplName').value.trim() || 'Untitled';
-    const weeks = parseInt(root.querySelector('#tplWeeks').value||'4',10);
     if(!db || !state.user) return alert('Login + Firebase required.');
-    const trainerCode = 'BARN'; // change if you want the Trainer Code dropdown here
-    const grid = [];  // serialize cells → array of {week, day, movement, setsreps, load, notes}
+    const trainerCode = 'BARN';
 
-    body.querySelectorAll('tr').forEach((tr, idx)=>{
-      const week = idx+1;
+    // Serialize cells → array of {week, day, dow, movement, setsreps, load, notes}
+    const grid = [];
+    const rows = [...body.querySelectorAll('tr')];
+    rows.forEach((tr, idx)=>{
+      const week = idx + 1;
       const cells = [...tr.querySelectorAll('td.cell')];
       cells.forEach((td, cIdx)=>{
+        const dowRaw = td.querySelector('[data-field="dow"]')?.value ?? '';
+        const dow = dowRaw === '' ? null : Number(dowRaw); // 0..6 or null
+
         const rec = {
           week,
           day: DAYS[cIdx],
-          movement: td.querySelector('[data-field="movement"]')?.innerText.trim() || '',
+          dow, // NEW
+          movement: td.querySelector('[data-field="movement"]')?.value?.trim() || '',
           setsreps: td.querySelector('[data-field="setsreps"]')?.innerText.trim() || '',
           load:     td.querySelector('[data-field="load"]')?.innerText.trim() || '',
           notes:    td.querySelector('[data-field="notes"]')?.innerText.trim() || ''
         };
         // skip completely empty cells
-        if(rec.movement || rec.setsreps || rec.load || rec.notes) grid.push(rec);
+        if(rec.movement || rec.setsreps || rec.load || rec.notes || rec.dow != null) grid.push(rec);
       });
     });
 
     try{
+      const weeksCount = currentWeekCount(); // authoritative
       const ref = db.collection('templates').doc(trainerCode).collection('defs').doc();
       await ref.set({
-        name, weeksPerMesocycle: weeks, mesocycles: 1,
+        name,
+        weeksPerMesocycle: weeksCount,
+        mesocycles: 1,
         grid,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         createdBy: state.user.uid
       });
-      root.querySelector('#tplMsg').textContent = `Saved "${name}" (${grid.length} items).`;
+      root.querySelector('#tplMsg').textContent = `Saved "${name}" (${grid.length} items, ${weeksCount} week${weeksCount>1?'s':''}).`;
       alert('Template saved.');
       go('/templates');
     }catch(e){ alert(e.message); }
@@ -1227,59 +1504,89 @@ function SavedTemplates(){
   page('Saved Templates', root);
 
   (async ()=>{
-    if(!db) return root.querySelector('#tplList').innerHTML = `<div class="item">Firebase required.</div>`;
     const list = root.querySelector('#tplList');
-    const code = 'BARN'; // or read from your Trainer Code selector
+    if(!db || !state.user){
+      list.innerHTML = `<div class="item">Firebase required.</div>`;
+      return;
+    }
+
+    const trainerCode = 'BARN'; // adjust if you support multiple codes
 
     try{
-      const snap = await db.collection('templates').doc(code).collection('defs').orderBy('createdAt','desc').get();
-      if (snap.empty){ list.innerHTML = `<div class="item">No templates yet.</div>`; return; }
+      // Load templates
+      const snap = await db.collection('templates')
+        .doc(trainerCode)
+        .collection('defs')
+        .orderBy('createdAt','desc')
+        .get();
 
-      // Preload user options
-      const usersSel = document.createElement('select'); usersSel.innerHTML = `<option value="">— select user —</option>`;
-      const users = await db.collection('users').limit(200).get();
-      users.forEach(u=> {
-        const d = u.data(); const opt = document.createElement('option');
-        opt.value = u.id; opt.textContent = d.username || d.email || u.id.slice(0,6);
-        usersSel.appendChild(opt);
+      if (snap.empty){
+        list.innerHTML = `<div class="item">No templates yet. Create one in Template Builder.</div>`;
+        return;
+      }
+
+      // Preload users for assignment
+      const usersSelProto = document.createElement('select');
+      usersSelProto.innerHTML = `<option value="">— select user —</option>`;
+      const users = await db.collection('users').limit(300).get();
+      users.forEach(u=>{
+        const d = u.data() || {};
+        const opt = document.createElement('option');
+        opt.value = u.id;
+        opt.textContent = d.username || d.email || u.id.slice(0,6);
+        usersSelProto.appendChild(opt);
       });
 
       snap.forEach(doc=>{
-        const t = doc.data();
+        const t = doc.data() || {};
         const row = document.createElement('div'); row.className='item';
         row.innerHTML = `
           <div class="grow">
-            <div class="bold">${t.name}</div>
-            <div class="muted small">${t.grid?.length||0} items • Weeks: ${t.weeksPerMesocycle || '?'}</div>
+            <div class="bold">${t.name || '(untitled)'}</div>
+            <div class="muted small">
+              Items: ${t.grid?.length || 0}${t.weeksPerMesocycle ? ` • Weeks: ${t.weeksPerMesocycle}` : ''}
+            </div>
           </div>
-          <div class="row">
+          <div class="row" style="gap:.5rem; align-items:center;">
             <input type="date" class="startDate" />
             <span class="userSlot"></span>
             <button class="btn small assignBtn">Assign</button>
           </div>
         `;
-        // clone a users select per row
-        const sel = usersSel.cloneNode(true);
+
+        // Clone per-row user select
+        const sel = usersSelProto.cloneNode(true);
         row.querySelector('.userSlot').appendChild(sel);
 
+        // Wire assignment
         row.querySelector('.assignBtn').addEventListener('click', async ()=>{
           const uid = sel.value;
           const start = row.querySelector('.startDate').value || new Date().toISOString().slice(0,10);
-          if(!uid) return alert('Select a user.');
+          if(!uid) return alert('Select a user to assign.');
+
           try{
-            await assignTemplateToUser({ templateId: doc.id, template: t, trainerCode: code, userId: uid, startDate: start });
+            await assignTemplateToUser({
+              templateId: doc.id,
+              template: t,
+              trainerCode,
+              userId: uid,
+              startDate: start
+            });
             alert('Assigned!');
-          }catch(e){ alert(e.message); }
+          }catch(e){
+            alert(e.message || 'Failed to assign');
+          }
         });
 
         list.appendChild(row);
       });
     }catch(e){
       console.warn(e);
-      root.querySelector('#tplList').innerHTML = `<div class="item">Error: ${e.message}</div>`;
+      list.innerHTML = `<div class="item">Error: ${e.message}</div>`;
     }
   })();
 }
+
 
 // ---- Athlete View ----
 function AthleteView(){
@@ -1300,16 +1607,21 @@ function AthleteView(){
         const profile = u.data() || {};
         const name = profile.username || profile.email || uid.slice(0,6);
 
+        // Assignment summary
         const assign = await db.collection('assignments').doc(uid).get();
         let assignedText = 'No program assigned';
         let planCount = 0;
         if(assign.exists){
           const a = assign.data();
           assignedText = `Assigned: ${a.trainerCode} • Week ${a.weekNumber} • Start ${a.startDate}`;
-          const weekDoc = await db.collection('programs').doc(a.trainerCode).collection('weeks').doc(String(a.weekNumber)).get();
+          const weekDoc = await db.collection('programs')
+                                  .doc(a.trainerCode)
+                                  .collection('weeks')
+                                  .doc(String(a.weekNumber)).get();
           planCount = weekDoc.exists ? ((weekDoc.data().sessions||[]).length) : 0;
         }
 
+        // 7-day completion count
         const today = new Date();
         let completed7 = 0;
         for(let i=0;i<7;i++){
@@ -1322,7 +1634,9 @@ function AthleteView(){
         const row = document.createElement('div'); row.className = 'item';
         row.innerHTML = `
           <div class="grow">
-            <div class="bold">${name}</div>
+            <div class="bold">
+              <a href="#/athlete?uid=${uid}">${name}</a>
+            </div>
             <div class="small muted">${assignedText}</div>
             <div class="small muted">Sessions in plan: ${planCount}</div>
             <div class="small">Completed (7d): ${completed7}</div>
@@ -1336,6 +1650,297 @@ function AthleteView(){
     }
   })();
 }
+
+// ---- Small helper for hash query params (e.g., #/athlete?uid=123) ----
+function getQueryParam(key){
+  try{
+    const q = (location.hash || '').split('?')[1] || '';
+    return new URLSearchParams(q).get(key);
+  }catch{ return null; }
+}
+
+// ---- Athlete Detail (Program | Scheduled Sessions | Variation Record) ----
+function AthleteDetail(){
+  if (!isCoachUser || !isCoachUser()) {
+    return page('Athlete Detail', `<p class="muted">Coach access required.</p>`);
+  }
+
+  const uid = getQueryParam('uid');
+  if (!uid){
+    return page('Athlete Detail', `<p class="muted">No athlete selected.</p>`);
+  }
+
+  const root = document.createElement('div');
+  root.innerHTML = `
+    <div class="row" style="gap:.5rem; align-items:center;">
+      <div class="tabs" style="display:flex; gap:.5rem;">
+        <button class="btn small" data-tab="program">Program</button>
+        <button class="btn small ghost" data-tab="scheduled">Scheduled Sessions</button>
+        <button class="btn small ghost" data-tab="variations">Variation Record</button>
+      </div>
+      <div style="margin-left:auto; display:flex; gap:.5rem;">
+        <button id="btnUnassign" class="btn small danger">Delete Program</button>
+      </div>
+    </div>
+    <div id="athMeta" class="muted small mt">Loading athlete…</div>
+    <div id="athBody" class="mt">Loading…</div>
+  `;
+  page('Athlete Detail', root);
+
+  const metaEl = root.querySelector('#athMeta');
+  const bodyEl = root.querySelector('#athBody');
+
+  // Local-only (don't mutate global state.*)
+  let profile = {};
+  let sessionsMap = {};       // from program + startDate (reference)
+  let scheduledDays = [];     // [{ date: 'YYYY-MM-DD', title, blocks, status }]
+  let logs = [];              // athlete logs (if rules allow coach read)
+
+  function setActive(tab){
+    root.querySelectorAll('.tabs .btn').forEach(b=>{
+      b.classList.toggle('ghost', b.dataset.tab !== tab);
+    });
+  }
+
+  function renderProgram(){
+    setActive('program');
+    if (!Object.keys(sessionsMap).length){
+      bodyEl.innerHTML = `<p class="muted">No scheduled sessions derived from program.</p>`;
+      return;
+    }
+    const ul = document.createElement('ul'); ul.className = 'list';
+    Object.entries(sessionsMap)
+      .sort((a,b)=> a[0].localeCompare(b[0]))
+      .forEach(([date, s])=>{
+        const ex = (s.blocks || []).map(b =>
+          `${b.name} — ${b.sets||1} x ${b.reps??'—'}${b.weight? ` @ ${b.weight} lb`:''}`
+        ).join('<br/>') || '<span class="muted">No blocks</span>';
+        const li = document.createElement('li'); li.className='item';
+        li.innerHTML = `
+          <div class="grow">
+            <div class="bold">${s.title || 'Session'}</div>
+            <div class="small muted">${date}</div>
+            <div class="mt small">${ex}</div>
+          </div>`;
+        ul.appendChild(li);
+      });
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(ul);
+  }
+
+  function renderScheduled(){
+    setActive('scheduled');
+    const today = new Date().toISOString().slice(0,10);
+
+    // Show upcoming sessions; remove filter to include past as well.
+    const upcoming = (scheduledDays || [])
+      .filter(d => (d.date || '') >= today)
+      .sort((a,b)=> a.date.localeCompare(b.date));
+
+    if (!upcoming.length){
+      bodyEl.innerHTML = `<p class="muted">No upcoming scheduled sessions.</p>`;
+      return;
+    }
+
+    const ul = document.createElement('ul'); ul.className = 'list';
+    upcoming.forEach(s => {
+      const ex = (s.blocks || []).map(b =>
+        `${b.name} — ${b.sets||1} x ${b.reps??'—'}${b.weight? ` @ ${b.weight} lb`:''}`
+      ).join('<br/>') || '<span class="muted">No blocks</span>';
+
+      const status = (s.status || 'planned');
+      const deletable = status !== 'completed'; // safety: don't delete completed by default
+
+      const li = document.createElement('li'); li.className='item';
+      li.innerHTML = `
+        <div class="grow">
+          <div class="row" style="align-items:center; gap:.5rem;">
+            <div class="bold">${s.title || 'Session'}</div>
+            <span class="chip small" style="margin-left:auto">${status}</span>
+            <button class="btn small danger del-day" data-date="${s.date}" ${deletable ? '' : 'disabled title="Completed sessions are not deleted"'}>Delete</button>
+          </div>
+          <div class="small muted">${s.date}</div>
+          <div class="mt small">${ex}</div>
+        </div>`;
+      ul.appendChild(li);
+    });
+
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(ul);
+
+    // Wire per-session delete buttons
+    bodyEl.querySelectorAll('.del-day').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const date = btn.getAttribute('data-date');
+        if (!date) return;
+        const ok = confirm(`Delete scheduled session on ${date}? This removes it from the athlete's calendar.`);
+        if (!ok) return;
+        try{
+          await db.collection('sessions').doc(uid).collection('days').doc(date).delete();
+          // Update local state and re-render
+          scheduledDays = scheduledDays.filter(d => d.date !== date);
+          showToast(`Deleted session on ${date}`);
+          renderScheduled();
+        }catch(e){
+          alert(e.message || 'Failed to delete session');
+        }
+      });
+    });
+  }
+
+  function renderVariations(){
+    setActive('variations');
+    const container = document.createElement('div');
+    container.innerHTML = `
+      <p class="muted">Recent sets grouped by exercise.</p>
+      <input id="q" placeholder="Search exercise"/>
+      <ul id="varList" class="list mt"></ul>
+    `;
+    const ul = container.querySelector('#varList');
+
+    function renderList(){
+      ul.innerHTML = '';
+      const q = container.querySelector('#q').value.trim().toLowerCase();
+      const names = new Set([...(state.exercises||[]), ...logs.map(h=>h.exercise)]);
+      const list = [...names].filter(n=> n && (!q || n.toLowerCase().includes(q))).sort();
+
+      list.forEach(name=>{
+        const entries = logs.filter(h=> h.exercise===name).sort((a,b)=> b.date.localeCompare(a.date));
+        const text = entries.slice(0,5).map(h=>{
+          const wt = (h.weight!=null ? `${h.weight} lb` : '');
+          const reps = (h.reps!=null ? ` x ${h.reps}` : '');
+          return `${h.date}: ${wt}${reps}`;
+        }).join('<br/>') || '—';
+
+        const li = document.createElement('li'); li.className='item';
+        li.innerHTML = `<div class="grow">
+          <div class="bold">${name}</div>
+          <div class="muted small">${text}</div>
+        </div>`;
+        ul.appendChild(li);
+      });
+
+      if(!ul.children.length){
+        ul.innerHTML = `<li class="item"><div class="muted">No matching records.</div></li>`;
+      }
+    }
+
+    container.querySelector('#q').addEventListener('input', renderList);
+    renderList();
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(container);
+  }
+
+  // -------- Coach actions --------
+  async function unassignProgramAndOptionallyClear(){
+    if (!db) return alert('Firebase required.');
+    // First confirm unassign
+    const unassign = confirm('Delete this athlete’s program assignment? This will remove the assignment link.');
+    if (!unassign) return;
+
+    try{
+      await db.collection('assignments').doc(uid).delete();
+    }catch(e){
+      alert(e.message || 'Failed to delete assignment');
+      return;
+    }
+
+    // Then optionally clear scheduled (non-completed) days
+    const clearDays = confirm('Also clear scheduled days that are NOT completed?');
+    if (clearDays){
+      try{
+        const snap = await db.collection('sessions').doc(uid).collection('days').get();
+        const toDelete = snap.docs.filter(d => (d.data()?.status || 'planned') !== 'completed');
+        // Chunk deletes to be safe
+        const chunk = 400;
+        for (let i=0; i<toDelete.length; i+=chunk){
+          const batch = db.batch();
+          toDelete.slice(i, i+chunk).forEach(doc => batch.delete(doc.ref));
+          await batch.commit();
+        }
+      }catch(e){
+        alert(e.message || 'Assignment removed, but failed to clear some scheduled days');
+      }
+    }
+
+    // Refresh local view
+    try{
+      const daysSnap = await db.collection('sessions').doc(uid).collection('days').get();
+      scheduledDays = daysSnap.docs.map(d => ({ date: d.id, ...(d.data() || {}) }));
+    }catch{ scheduledDays = []; }
+
+    sessionsMap = {}; // derived program reference no longer relevant
+    showToast('Program deleted');
+    renderScheduled();
+  }
+
+  // Tab switching
+  root.querySelectorAll('.tabs .btn').forEach(btn=>{
+    btn.addEventListener('click', ()=> {
+      if (btn.dataset.tab === 'program') renderProgram();
+      else if (btn.dataset.tab === 'scheduled') renderScheduled();
+      else renderVariations();
+    });
+  });
+
+  // Wire delete program button
+  root.querySelector('#btnUnassign').addEventListener('click', unassignProgramAndOptionallyClear);
+
+  // -------- Data load --------
+  async function loadAthleteData(){
+    if(!db){ bodyEl.textContent = 'Firebase required.'; return; }
+
+    // Profile
+    const uref = await db.collection('users').doc(uid).get();
+    profile = uref.exists ? (uref.data()||{}) : {};
+    metaEl.textContent = `Athlete: ${profile.username || profile.email || uid}`;
+
+    // Assignment → sessionsMap from program + startDate (reference)
+    const asnap = await db.collection('assignments').doc(uid).get();
+    if (asnap.exists){
+      const a = asnap.data() || {};
+      const trainerCode = a.trainerCode || 'BARN';
+      const startDate = a.startDate || new Date().toISOString().slice(0,10);
+      const weeksSnap = await db.collection('programs').doc(trainerCode).collection('weeks').get();
+      const weeks = weeksSnap.docs.map(d=>{
+        const data = d.data() || {};
+        const wn = data.weekNumber != null ? data.weekNumber : Number(d.id) || null;
+        return { weekNumber: wn, ...data };
+      });
+      sessionsMap = buildSessionsMapFromWeeks(weeks, startDate);
+    } else {
+      sessionsMap = {};
+    }
+
+    // Scheduled sessions (authoritative)
+    try{
+      const daysSnap = await db.collection('sessions').doc(uid).collection('days').get();
+      scheduledDays = daysSnap.docs.map(d => ({ date: d.id, ...(d.data() || {}) }));
+    }catch(e){
+      scheduledDays = [];
+      console.warn('Coach cannot read scheduled days (check /sessions rules)', e);
+    }
+
+    // Logs (optional; needs coach read in rules)
+    try{
+      const logsSnap = await db.collection('logs').doc(uid).collection('entries')
+                        .orderBy('date','desc').limit(500).get();
+      logs = logsSnap.docs.map(d => d.data());
+    }catch(e){
+      logs = [];
+      console.warn('Coach cannot read athlete logs (expected if logs are private)', e);
+    }
+
+    // Default tab
+    renderScheduled(); // start on Scheduled since it’s the actionable tab now
+  }
+
+  loadAthleteData().catch(e=>{
+    console.warn(e);
+    bodyEl.innerHTML = `<p class="muted">Error loading athlete: ${e.message}</p>`;
+  });
+}
+
 
 // ---- Settings ----
 function Settings(){
@@ -1441,117 +2046,219 @@ route('/unscheduled', UnscheduledSession);
 route('/athletes', AthleteView);
 route('/template-builder', TemplateBuilder);
 route('/templates', SavedTemplates);
+route('/athlete', AthleteDetail);
 
-// ---- Auth glue ----
-async function main(){
-  await initFirebase();
-  if(auth){
-    auth.onAuthStateChanged(async(user)=>{
-      state.user = user;
-      if(!user){ return go('/login'); }
 
-      const uref = db.collection('users').doc(user.uid);
-      const snap = await uref.get();
-      if(!snap.exists){
-        await uref.set({
-          username: user.email.split('@')[0],
-          goal:'', trainerCode:'BARN',
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        await ensureExercises(); // seeds user exercise library in Firestore
-      }
+// ---- Auth glue (compat SDK) ----
 
-       const unsubProfile = uref.onSnapshot(pdoc => {
-  state.profile = pdoc.data() || {};
-  // re-render things that show profile (drawer header, settings page, etc.)
-  render();
-});
-(state.unsub ||= []).push(unsubProfile);
-      
-      // live user data
-      db.collection('users').doc(user.uid).collection('exercises')
-  .onSnapshot(s=>{ 
-    state.exercises = s.docs.map(d=> d.data().name).sort();
-    if (location.hash === '#/coach') render();
-  });
+// Coach flag for UI gating (rules still enforce writes)
+const COACH_UID = "Pxgym9zVYmYifKvF4AeXotus4wJ2";
+function isCoachUser() {
+  const u = firebase.auth().currentUser;
+  return !!u && u.uid === COACH_UID;
+}
 
-      db.collection('logs').doc(user.uid).collection('entries')
-        .orderBy('date','desc').limit(300)
-        .onSnapshot(s=>{ state.logs = s.docs.map(d=> d.data()); });
+// Toggle this if you still want athletes to see their *personal* exercises merged in
+const INCLUDE_PERSONAL_EXERCISES = false;
 
-      // NEW: hydrate program → sessionsMap when an assignment exists
-      db.collection('assignments').doc(user.uid).onSnapshot(async (snap)=>{
-        if (!snap.exists){
+// Helper: safely push an unsubscribe and create state.unsub if needed
+function trackUnsub(fn) {
+  (state.unsub ||= []).push(fn);
+}
+
+// Helper: clear all active listeners
+function clearUnsubs() {
+  if (Array.isArray(state.unsub)) {
+    state.unsub.forEach(fn => { try { fn(); } catch (_) {} });
+  }
+  state.unsub = [];
+}
+
+// Subscribe to global + (optional) personal exercises and keep state.exercises updated
+function subscribeExercises(uid) {
+  const db = firebase.firestore();
+
+  // Merge function that dedupes by name (case-insensitive) and sorts alpha
+  function mergeAndPublish(globalDocs, personalDocs) {
+    const items = [];
+    const seen = new Set();
+    const pushName = (name) => {
+      const key = (name || "").trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      items.push(name.trim());
+    };
+
+    globalDocs.forEach(d => pushName(d.data().name || d.data().nameLower || d.id));
+    personalDocs.forEach(d => pushName(d.data().name || d.data().nameLower || d.id));
+
+    items.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    state.exercises = items;
+    // Only re-render Coach Portal-heavy views to avoid thrash
+    const p = currentRoutePath();
+      if (p === '/coach' || p === '/template' || p === '/exercises') {render();
+    }
+  }
+
+  let globalDocs = [];
+  let personalDocs = [];
+
+  // Global exercises (coach-managed)
+  const unsubGlobal = db.collection('exercises')
+    .orderBy('nameLower') // single-field index, auto-created by Firestore
+    .onSnapshot(snap => {
+      globalDocs = snap.docs;
+      mergeAndPublish(globalDocs, personalDocs);
+    }, err => console.warn('global exercises snapshot error', err));
+  trackUnsub(unsubGlobal);
+
+  // Optional: personal exercises under the signed-in user
+  if (INCLUDE_PERSONAL_EXERCISES && uid) {
+    const unsubPersonal = db.collection('users').doc(uid)
+      .collection('exercises')
+      .orderBy('nameLower')
+      .onSnapshot(snap => {
+        personalDocs = snap.docs;
+        mergeAndPublish(globalDocs, personalDocs);
+      }, err => console.warn('personal exercises snapshot error', err));
+    trackUnsub(unsubPersonal);
+  }
+}
+
+async function main() {
+  await initFirebase(); // should set window.db = firebase.firestore(), window.auth = firebase.auth()
+
+  if (!auth) {
+    console.error("Firebase auth not initialized");
+    return;
+  }
+
+  auth.onAuthStateChanged(async (user) => {
+    // Clean up old listeners on any auth change
+    clearUnsubs();
+
+    state.user = user;
+
+    if (!user) {
+      state.profile = {};
+      render();
+      return go('/login');
+    }
+
+    // Ensure a /users/{uid} doc exists
+    const uref = db.collection('users').doc(user.uid);
+    const snap = await uref.get();
+    if (!snap.exists) {
+      await uref.set({
+        username: (user.email || '').split('@')[0],
+        goal: '',
+        trainerCode: 'BARN',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // ❗ If you still want per-user libraries for athletes, you can keep this.
+      // But for a *global* coach-managed library, you likely want this OFF.
+      // await ensureExercises(); // (legacy) seeds *user* exercise library
+    }
+
+    // Live profile listener
+    const unsubProfile = uref.onSnapshot(pdoc => {
+      state.profile = pdoc.data() || {};
+      render(); // updates drawer header, settings, etc.
+    }, err => console.warn('profile snapshot error', err));
+    trackUnsub(unsubProfile);
+
+    // Live logs (private to the user)
+    const unsubLogs = db.collection('logs').doc(user.uid).collection('entries')
+      .orderBy('date', 'desc').limit(300)
+      .onSnapshot(s => { state.logs = s.docs.map(d => d.data()); },
+                  err => console.warn('logs snapshot error', err));
+    trackUnsub(unsubLogs);
+
+    // NEW: subscribe to global (+ optional personal) exercises
+    subscribeExercises(user.uid);
+
+    // Assignments → hydrate program into sessionsMap
+    const unsubAssign = db.collection('assignments').doc(user.uid)
+      .onSnapshot(async (asnap) => {
+        if (!asnap.exists) {
           state.sessionsMap = {};
           state.program = [];
           render();
           return;
         }
 
-        const a = snap.data(); // {trainerCode, weekNumber, startDate}
-        if(!a?.trainerCode || !a?.weekNumber){
+        const a = asnap.data(); // {trainerCode, weekNumber, startDate}
+        if (!a?.trainerCode || !a?.weekNumber) {
           state.sessionsMap = {};
           state.program = [];
           render();
           return;
         }
 
-        try{
+        try {
           const weekDoc = await db
             .collection('programs').doc(a.trainerCode)
             .collection('weeks').doc(String(a.weekNumber)).get();
 
           const sessions = weekDoc.exists ? (weekDoc.data().sessions || []) : [];
 
-          // If startDate is missing and sessions have no explicit dates,
-          // we can default to today so users still see a plan.
-          const anchor = a.startDate || new Date().toISOString().slice(0,10);
-
+          // If startDate missing, anchor to today to keep UX alive
+          const anchor = a.startDate || new Date().toISOString().slice(0, 10);
           const map = planSessionsToDates(sessions, anchor);
 
           state.program = sessions;
           state.sessionsMap = map;
 
-          // Optional but recommended: persist planned days so they are visible under sessions/{uid}/days/*
+          // Persist planned days under /sessions/{uid}/days for Calendar/Today views
           await writePlannedDaysToFirestore(user.uid, map);
 
           render();
-        } catch(err){
+        } catch (err) {
           console.warn('assignment -> program hydrate error', err);
         }
-      });
+      }, err => console.warn('assignments snapshot error', err));
+    trackUnsub(unsubAssign);
 
-      // NOTE: removed attachProgramSync(user.uid); (not defined)
-
-      go('/dashboard');
-    });
-  }else{
-    const demoUser = ls.get('bs_demo_user') || { uid:'local', email:'demo@barnstrong.fit' };
-    state.user = demoUser;
-    ensureLocalExercises();
+    // Land user
     go('/dashboard');
-  }
+  });
+
   render();
   setTimeout(setNetBanner, 500);
 }
 
-
-function render(){
-  const path = location.hash.replace('#','') || '/login';
+function render() {
+  const path = currentRoutePath();          // <-- strip ?uid=...
   const authed = !!state.user;
+
   qs('#drawerName').textContent = state.profile?.username || (state.user?.email || 'Guest');
   qs('#drawerGoal').textContent = 'Goal: ' + (state.profile?.goal || '—');
-  if(!authed && path !== '/login') return go('/login');
+
+  if (!authed && path !== '/login') return go('/login');
+
   (routes[path] || routes['/404'])();
 }
 
-document.addEventListener('click', (e)=>{
-  if(e.target && e.target.id==='logoutBtn'){
-    if(auth){ auth.signOut(); }
-    else { state.user=null; ls.rm('bs_demo_user'); }
-    openDrawer(false); go('/login');
+
+// Logout handling
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'logoutBtn') {
+    if (auth) { auth.signOut(); }
+    else { state.user = null; ls.rm('bs_demo_user'); }
+    clearUnsubs();
+    openDrawer(false);
+    go('/login');
   }
 });
+// ---- Service Worker (GitHub Pages scope-safe) ----
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => console.log('SW registered:', reg.scope))
+      .catch(err => console.warn('SW register failed', err));
+  });
+}
 
 main();
 qs('#splash')?.remove();

@@ -1432,10 +1432,7 @@ function getQueryParam(key){
 
 // ---- Athlete Detail (Program | Scheduled Sessions | Variation Record) ----
 function AthleteDetail(){
-  if (!isCoachUser && typeof isCoachUser !== 'function') {
-    return page('Athlete Detail', `<p class="muted">Coach access helper missing.</p>`);
-  }
-  if (!isCoachUser()){
+  if (!isCoachUser || !isCoachUser()) {
     return page('Athlete Detail', `<p class="muted">Coach access required.</p>`);
   }
 
@@ -1446,10 +1443,15 @@ function AthleteDetail(){
 
   const root = document.createElement('div');
   root.innerHTML = `
-    <div class="tabs row">
-      <button class="btn small" data-tab="program">Program</button>
-      <button class="btn small ghost" data-tab="scheduled">Scheduled Sessions</button>
-      <button class="btn small ghost" data-tab="variations">Variation Record</button>
+    <div class="row" style="gap:.5rem; align-items:center;">
+      <div class="tabs" style="display:flex; gap:.5rem;">
+        <button class="btn small" data-tab="program">Program</button>
+        <button class="btn small ghost" data-tab="scheduled">Scheduled Sessions</button>
+        <button class="btn small ghost" data-tab="variations">Variation Record</button>
+      </div>
+      <div style="margin-left:auto; display:flex; gap:.5rem;">
+        <button id="btnUnassign" class="btn small danger">Delete Program</button>
+      </div>
     </div>
     <div id="athMeta" class="muted small mt">Loading athlete…</div>
     <div id="athBody" class="mt">Loading…</div>
@@ -1461,7 +1463,7 @@ function AthleteDetail(){
 
   // Local-only (don't mutate global state.*)
   let profile = {};
-  let sessionsMap = {};       // built from programs + startDate (for reference)
+  let sessionsMap = {};       // from program + startDate (reference)
   let scheduledDays = [];     // [{ date: 'YYYY-MM-DD', title, blocks, status }]
   let logs = [];              // athlete logs (if rules allow coach read)
 
@@ -1501,7 +1503,7 @@ function AthleteDetail(){
     setActive('scheduled');
     const today = new Date().toISOString().slice(0,10);
 
-    // Show all upcoming (today and future). If you want *all scheduled* including past, remove the filter.
+    // Show upcoming sessions; remove filter to include past as well.
     const upcoming = (scheduledDays || [])
       .filter(d => (d.date || '') >= today)
       .sort((a,b)=> a.date.localeCompare(b.date));
@@ -1518,12 +1520,15 @@ function AthleteDetail(){
       ).join('<br/>') || '<span class="muted">No blocks</span>';
 
       const status = (s.status || 'planned');
+      const deletable = status !== 'completed'; // safety: don't delete completed by default
+
       const li = document.createElement('li'); li.className='item';
       li.innerHTML = `
         <div class="grow">
-          <div class="row">
+          <div class="row" style="align-items:center; gap:.5rem;">
             <div class="bold">${s.title || 'Session'}</div>
             <span class="chip small" style="margin-left:auto">${status}</span>
+            <button class="btn small danger del-day" data-date="${s.date}" ${deletable ? '' : 'disabled title="Completed sessions are not deleted"'}>Delete</button>
           </div>
           <div class="small muted">${s.date}</div>
           <div class="mt small">${ex}</div>
@@ -1533,6 +1538,25 @@ function AthleteDetail(){
 
     bodyEl.innerHTML = '';
     bodyEl.appendChild(ul);
+
+    // Wire per-session delete buttons
+    bodyEl.querySelectorAll('.del-day').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const date = btn.getAttribute('data-date');
+        if (!date) return;
+        const ok = confirm(`Delete scheduled session on ${date}? This removes it from the athlete's calendar.`);
+        if (!ok) return;
+        try{
+          await db.collection('sessions').doc(uid).collection('days').doc(date).delete();
+          // Update local state and re-render
+          scheduledDays = scheduledDays.filter(d => d.date !== date);
+          showToast(`Deleted session on ${date}`);
+          renderScheduled();
+        }catch(e){
+          alert(e.message || 'Failed to delete session');
+        }
+      });
+    });
   }
 
   function renderVariations(){
@@ -1578,6 +1602,62 @@ function AthleteDetail(){
     bodyEl.appendChild(container);
   }
 
+  // -------- Coach actions --------
+  async function unassignProgramAndOptionallyClear(){
+    if (!db) return alert('Firebase required.');
+    // First confirm unassign
+    const unassign = confirm('Delete this athlete’s program assignment? This will remove the assignment link.');
+    if (!unassign) return;
+
+    try{
+      await db.collection('assignments').doc(uid).delete();
+    }catch(e){
+      alert(e.message || 'Failed to delete assignment');
+      return;
+    }
+
+    // Then optionally clear scheduled (non-completed) days
+    const clearDays = confirm('Also clear scheduled days that are NOT completed?');
+    if (clearDays){
+      try{
+        const snap = await db.collection('sessions').doc(uid).collection('days').get();
+        const toDelete = snap.docs.filter(d => (d.data()?.status || 'planned') !== 'completed');
+        // Chunk deletes to be safe
+        const chunk = 400;
+        for (let i=0; i<toDelete.length; i+=chunk){
+          const batch = db.batch();
+          toDelete.slice(i, i+chunk).forEach(doc => batch.delete(doc.ref));
+          await batch.commit();
+        }
+      }catch(e){
+        alert(e.message || 'Assignment removed, but failed to clear some scheduled days');
+      }
+    }
+
+    // Refresh local view
+    try{
+      const daysSnap = await db.collection('sessions').doc(uid).collection('days').get();
+      scheduledDays = daysSnap.docs.map(d => ({ date: d.id, ...(d.data() || {}) }));
+    }catch{ scheduledDays = []; }
+
+    sessionsMap = {}; // derived program reference no longer relevant
+    showToast('Program deleted');
+    renderScheduled();
+  }
+
+  // Tab switching
+  root.querySelectorAll('.tabs .btn').forEach(btn=>{
+    btn.addEventListener('click', ()=> {
+      if (btn.dataset.tab === 'program') renderProgram();
+      else if (btn.dataset.tab === 'scheduled') renderScheduled();
+      else renderVariations();
+    });
+  });
+
+  // Wire delete program button
+  root.querySelector('#btnUnassign').addEventListener('click', unassignProgramAndOptionallyClear);
+
+  // -------- Data load --------
   async function loadAthleteData(){
     if(!db){ bodyEl.textContent = 'Firebase required.'; return; }
 
@@ -1586,7 +1666,7 @@ function AthleteDetail(){
     profile = uref.exists ? (uref.data()||{}) : {};
     metaEl.textContent = `Athlete: ${profile.username || profile.email || uid}`;
 
-    // Assignment → build sessionsMap from program + startDate (read-only reference)
+    // Assignment → sessionsMap from program + startDate (reference)
     const asnap = await db.collection('assignments').doc(uid).get();
     if (asnap.exists){
       const a = asnap.data() || {};
@@ -1603,16 +1683,16 @@ function AthleteDetail(){
       sessionsMap = {};
     }
 
-    // Scheduled sessions from persisted plan (authoritative for "currently scheduled")
+    // Scheduled sessions (authoritative)
     try{
       const daysSnap = await db.collection('sessions').doc(uid).collection('days').get();
       scheduledDays = daysSnap.docs.map(d => ({ date: d.id, ...(d.data() || {}) }));
     }catch(e){
       scheduledDays = [];
-      console.warn('Coach cannot read scheduled days (check rules for /sessions)', e);
+      console.warn('Coach cannot read scheduled days (check /sessions rules)', e);
     }
 
-    // Logs for Variation tab (optional; needs coach read in rules)
+    // Logs (optional; needs coach read in rules)
     try{
       const logsSnap = await db.collection('logs').doc(uid).collection('entries')
                         .orderBy('date','desc').limit(500).get();
@@ -1623,17 +1703,8 @@ function AthleteDetail(){
     }
 
     // Default tab
-    renderProgram();
+    renderScheduled(); // start on Scheduled since it’s the actionable tab now
   }
-
-  // Tab switching
-  root.querySelectorAll('.tabs .btn').forEach(btn=>{
-    btn.addEventListener('click', ()=> {
-      if (btn.dataset.tab === 'program') renderProgram();
-      else if (btn.dataset.tab === 'scheduled') renderScheduled();
-      else renderVariations();
-    });
-  });
 
   loadAthleteData().catch(e=>{
     console.warn(e);

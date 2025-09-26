@@ -80,3 +80,42 @@ table.sheet th { background: var(--card); text-align:left; }
 table.sheet .slot { min-height:22px; padding:4px; border-radius:6px; }
 table.sheet .slot:empty:before { content: attr(placeholder); color: var(--muted); }
 table.sheet .slot:focus { outline: 2px solid rgba(255,0,0,.25); background: rgba(255,0,0,.04); }
+
+/* Template Builder – Day-of-Week select */
+.sheet .cell .dow {
+  min-width: 9rem;             /* more room for 'Thursday' etc. */
+  height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #444);
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.2;
+  background: var(--surface, #1e1e1e);  /* dark default */
+  color: var(--fg, #fff);                /* dark default */
+  appearance: auto;                      /* keep native dropdown */
+}
+
+.sheet .cell .dow:focus {
+  outline: 2px solid #7aa2ff;
+  outline-offset: 1px;
+}
+
+/* Dropdown menu colors (most browsers honor these) */
+.sheet .cell .dow option {
+  background: #fff;
+  color: #111;
+}
+
+/* Light theme override (if you’re not using CSS variables) */
+@media (prefers-color-scheme: light) {
+  .sheet .cell .dow {
+    background: #fff;
+    color: #111;
+    border-color: #bbb;
+  }
+  .sheet .cell .dow option {
+    background: #fff;
+    color: #111;
+  }
+}
+

@@ -1371,16 +1371,21 @@ function AthleteView(){
         const profile = u.data() || {};
         const name = profile.username || profile.email || uid.slice(0,6);
 
+        // Assignment summary
         const assign = await db.collection('assignments').doc(uid).get();
         let assignedText = 'No program assigned';
         let planCount = 0;
         if(assign.exists){
           const a = assign.data();
           assignedText = `Assigned: ${a.trainerCode} • Week ${a.weekNumber} • Start ${a.startDate}`;
-          const weekDoc = await db.collection('programs').doc(a.trainerCode).collection('weeks').doc(String(a.weekNumber)).get();
+          const weekDoc = await db.collection('programs')
+                                  .doc(a.trainerCode)
+                                  .collection('weeks')
+                                  .doc(String(a.weekNumber)).get();
           planCount = weekDoc.exists ? ((weekDoc.data().sessions||[]).length) : 0;
         }
 
+        // 7-day completion count
         const today = new Date();
         let completed7 = 0;
         for(let i=0;i<7;i++){
@@ -1393,7 +1398,9 @@ function AthleteView(){
         const row = document.createElement('div'); row.className = 'item';
         row.innerHTML = `
           <div class="grow">
-            <div class="bold">${name}</div>
+            <div class="bold">
+              <a href="#/athlete?uid=${uid}">${name}</a>
+            </div>
             <div class="small muted">${assignedText}</div>
             <div class="small muted">Sessions in plan: ${planCount}</div>
             <div class="small">Completed (7d): ${completed7}</div>
@@ -1407,6 +1414,214 @@ function AthleteView(){
     }
   })();
 }
+
+// ---- Small helper for hash query params (e.g., #/athlete?uid=123) ----
+function getQueryParam(key){
+  try{
+    const q = (location.hash || '').split('?')[1] || '';
+    return new URLSearchParams(q).get(key);
+  }catch{ return null; }
+}
+
+// ---- Athlete Detail (Program | Today | Variation Record) ----
+function AthleteDetail(){
+  if (!isCoachUser && typeof isCoachUser !== 'function') {
+    return page('Athlete Detail', `<p class="muted">Coach access helper missing.</p>`);
+  }
+  if (!isCoachUser()){
+    return page('Athlete Detail', `<p class="muted">Coach access required.</p>`);
+  }
+
+  const uid = getQueryParam('uid');
+  if (!uid){
+    return page('Athlete Detail', `<p class="muted">No athlete selected.</p>`);
+  }
+
+  const root = document.createElement('div');
+  root.innerHTML = `
+    <div class="tabs row">
+      <button class="btn small" data-tab="program">Program</button>
+      <button class="btn small ghost" data-tab="today">Today's Session</button>
+      <button class="btn small ghost" data-tab="variations">Variation Record</button>
+    </div>
+    <div id="athMeta" class="muted small mt">Loading athlete…</div>
+    <div id="athBody" class="mt">Loading…</div>
+  `;
+  page('Athlete Detail', root);
+
+  const metaEl = root.querySelector('#athMeta');
+  const bodyEl = root.querySelector('#athBody');
+
+  // Local-only (don't mutate global state.*)
+  let profile = {};
+  let programWeeks = [];   // [{weekNumber, sessions:[]}, ...]
+  let sessionsMap = {};    // { date -> { title, blocks, ... } }
+  let logs = [];           // athlete's logs (if rules allow coach read)
+
+  function setActive(tab){
+    root.querySelectorAll('.tabs .btn').forEach(b=>{
+      b.classList.toggle('ghost', b.dataset.tab !== tab);
+    });
+  }
+
+  function renderProgram(){
+    setActive('program');
+    if (!Object.keys(sessionsMap).length){
+      bodyEl.innerHTML = `<p class="muted">No scheduled sessions.</p>`;
+      return;
+    }
+    const ul = document.createElement('ul'); ul.className = 'list';
+    Object.entries(sessionsMap)
+      .sort((a,b)=> a[0].localeCompare(b[0]))
+      .forEach(([date, s])=>{
+        const ex = (s.blocks || []).map(b =>
+          `${b.name} — ${b.sets||1} x ${b.reps??'—'}${b.weight? ` @ ${b.weight} lb`:''}`
+        ).join('<br/>') || '<span class="muted">No blocks</span>';
+        const li = document.createElement('li'); li.className='item';
+        li.innerHTML = `
+          <div class="grow">
+            <div class="bold">${s.title || 'Session'}</div>
+            <div class="small muted">${date}</div>
+            <div class="mt small">${ex}</div>
+          </div>`;
+        ul.appendChild(li);
+      });
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(ul);
+  }
+
+  function renderToday(){
+    setActive('today');
+    const today = new Date().toISOString().slice(0,10);
+    const sess = sessionsMap[today];
+    const wrap = document.createElement('div');
+
+    if (!sess){
+      const future = Object.values(sessionsMap)
+        .filter(s => (s.date||'') >= today)
+        .sort((a,b)=> (a.date||'').localeCompare(b.date));
+      const next = future[0];
+      wrap.innerHTML = `<p>No session scheduled for today.</p><p class="muted">Next: ${next? (next.date+' — '+next.title) : 'No upcoming'}</p>`;
+      bodyEl.innerHTML = ''; bodyEl.appendChild(wrap); return;
+    }
+
+    const list = document.createElement('ul'); list.className='list';
+    (sess.blocks || []).forEach(ex=>{
+      const setCount = ex.sets || ex.setCount || 1;
+      const plannedReps = ex.reps ?? ex.targetReps ?? '';
+      const li = document.createElement('li'); li.className='item';
+      li.innerHTML = `
+        <div class="grow">
+          <div class="bold">${ex.name}</div>
+          <div class="muted small">${setCount} x ${plannedReps}${ex.weight? ' @ '+ex.weight+' lb':''}</div>
+        </div>`;
+      list.appendChild(li);
+    });
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(list);
+  }
+
+  function renderVariations(){
+    setActive('variations');
+    const container = document.createElement('div');
+    container.innerHTML = `
+      <p class="muted">Recent sets grouped by exercise.</p>
+      <input id="q" placeholder="Search exercise"/>
+      <ul id="varList" class="list mt"></ul>
+    `;
+    const ul = container.querySelector('#varList');
+
+    function renderList(){
+      ul.innerHTML = '';
+      const q = container.querySelector('#q').value.trim().toLowerCase();
+      const names = new Set([...(state.exercises||[]), ...logs.map(h=>h.exercise)]);
+      const list = [...names].filter(n=> n && (!q || n.toLowerCase().includes(q))).sort();
+
+      list.forEach(name=>{
+        const entries = logs.filter(h=> h.exercise===name).sort((a,b)=> b.date.localeCompare(a.date));
+        const text = entries.slice(0,5).map(h=>{
+          const wt = (h.weight!=null ? `${h.weight} lb` : '');
+          const reps = (h.reps!=null ? ` x ${h.reps}` : '');
+          return `${h.date}: ${wt}${reps}`;
+        }).join('<br/>') || '—';
+
+        const li = document.createElement('li'); li.className='item';
+        li.innerHTML = `<div class="grow">
+          <div class="bold">${name}</div>
+          <div class="muted small">${text}</div>
+        </div>`;
+        ul.appendChild(li);
+      });
+
+      if(!ul.children.length){
+        ul.innerHTML = `<li class="item"><div class="muted">No matching records.</div></li>`;
+      }
+    }
+
+    container.querySelector('#q').addEventListener('input', renderList);
+    renderList();
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(container);
+  }
+
+  async function loadAthleteData(){
+    if(!db){ bodyEl.textContent = 'Firebase required.'; return; }
+
+    // Profile
+    const uref = await db.collection('users').doc(uid).get();
+    profile = uref.exists ? (uref.data()||{}) : {};
+    metaEl.textContent = `Athlete: ${profile.username || profile.email || uid}`;
+
+    // Assignment
+    const asnap = await db.collection('assignments').doc(uid).get();
+    if(!asnap.exists){
+      sessionsMap = {};
+      logs = [];
+      bodyEl.innerHTML = `<p class="muted">No program assigned.</p>`;
+      return;
+    }
+    const a = asnap.data() || {};
+    const trainerCode = a.trainerCode || 'BARN';
+    const startDate = a.startDate || new Date().toISOString().slice(0,10);
+
+    // Weeks → sessionsMap (reuse your helper)
+    const weeksSnap = await db.collection('programs').doc(trainerCode).collection('weeks').get();
+    const weeks = weeksSnap.docs.map(d=>{
+      const data = d.data() || {};
+      const wn = data.weekNumber != null ? data.weekNumber : Number(d.id) || null;
+      return { weekNumber: wn, ...data };
+    });
+    sessionsMap = buildSessionsMapFromWeeks(weeks, startDate);
+
+    // Logs (coach read may require rules tweak)
+    try{
+      const logsSnap = await db.collection('logs').doc(uid).collection('entries')
+                        .orderBy('date','desc').limit(500).get();
+      logs = logsSnap.docs.map(d => d.data());
+    }catch(e){
+      logs = [];
+      console.warn('Coach cannot read athlete logs (expected if rules keep logs private)', e);
+    }
+
+    // Default tab
+    renderProgram();
+  }
+
+  // Tab switching
+  root.querySelectorAll('.tabs .btn').forEach(btn=>{
+    btn.addEventListener('click', ()=> {
+      if (btn.dataset.tab === 'program') renderProgram();
+      else if (btn.dataset.tab === 'today') renderToday();
+      else renderVariations();
+    });
+  });
+
+  loadAthleteData().catch(e=>{
+    console.warn(e);
+    bodyEl.innerHTML = `<p class="muted">Error loading athlete: ${e.message}</p>`;
+  });
+}
+
 
 // ---- Settings ----
 function Settings(){
@@ -1512,6 +1727,8 @@ route('/unscheduled', UnscheduledSession);
 route('/athletes', AthleteView);
 route('/template-builder', TemplateBuilder);
 route('/templates', SavedTemplates);
+route('/athlete', AthleteDetail);
+
 
 // ---- Auth glue (compat SDK) ----
 

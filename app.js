@@ -1481,116 +1481,208 @@ route('/athletes', AthleteView);
 route('/template-builder', TemplateBuilder);
 route('/templates', SavedTemplates);
 
-// ---- Auth glue ----
-async function main(){
-  await initFirebase();
-  if(auth){
-    auth.onAuthStateChanged(async(user)=>{
-      state.user = user;
-      if(!user){ return go('/login'); }
+// ---- Auth glue (compat SDK) ----
 
-      const uref = db.collection('users').doc(user.uid);
-      const snap = await uref.get();
-      if(!snap.exists){
-        await uref.set({
-          username: user.email.split('@')[0],
-          goal:'', trainerCode:'BARN',
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        await ensureExercises(); // seeds user exercise library in Firestore
-      }
+// Coach flag for UI gating (rules still enforce writes)
+const COACH_UID = "Pxgym9zVYmYifKvF4AeXotus4wJ2";
+function isCoachUser() {
+  const u = firebase.auth().currentUser;
+  return !!u && u.uid === COACH_UID;
+}
 
-       const unsubProfile = uref.onSnapshot(pdoc => {
-  state.profile = pdoc.data() || {};
-  // re-render things that show profile (drawer header, settings page, etc.)
-  render();
-});
-(state.unsub ||= []).push(unsubProfile);
-      
-      // live user data
-      db.collection('users').doc(user.uid).collection('exercises')
-  .onSnapshot(s=>{ 
-    state.exercises = s.docs.map(d=> d.data().name).sort();
-    if (location.hash === '#/coach') render();
-  });
+// Toggle this if you still want athletes to see their *personal* exercises merged in
+const INCLUDE_PERSONAL_EXERCISES = true;
 
-      db.collection('logs').doc(user.uid).collection('entries')
-        .orderBy('date','desc').limit(300)
-        .onSnapshot(s=>{ state.logs = s.docs.map(d=> d.data()); });
+// Helper: safely push an unsubscribe and create state.unsub if needed
+function trackUnsub(fn) {
+  (state.unsub ||= []).push(fn);
+}
 
-      // NEW: hydrate program → sessionsMap when an assignment exists
-      db.collection('assignments').doc(user.uid).onSnapshot(async (snap)=>{
-        if (!snap.exists){
+// Helper: clear all active listeners
+function clearUnsubs() {
+  if (Array.isArray(state.unsub)) {
+    state.unsub.forEach(fn => { try { fn(); } catch (_) {} });
+  }
+  state.unsub = [];
+}
+
+// Subscribe to global + (optional) personal exercises and keep state.exercises updated
+function subscribeExercises(uid) {
+  const db = firebase.firestore();
+
+  // Merge function that dedupes by name (case-insensitive) and sorts alpha
+  function mergeAndPublish(globalDocs, personalDocs) {
+    const items = [];
+    const seen = new Set();
+    const pushName = (name) => {
+      const key = (name || "").trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      items.push(name.trim());
+    };
+
+    globalDocs.forEach(d => pushName(d.data().name || d.data().nameLower || d.id));
+    personalDocs.forEach(d => pushName(d.data().name || d.data().nameLower || d.id));
+
+    items.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    state.exercises = items;
+    // Only re-render Coach Portal-heavy views to avoid thrash
+    if (location.hash === '#/coach' || location.hash === '#/template' || location.hash === '#/exercises') {
+      render();
+    }
+  }
+
+  let globalDocs = [];
+  let personalDocs = [];
+
+  // Global exercises (coach-managed)
+  const unsubGlobal = db.collection('exercises')
+    .orderBy('nameLower') // single-field index, auto-created by Firestore
+    .onSnapshot(snap => {
+      globalDocs = snap.docs;
+      mergeAndPublish(globalDocs, personalDocs);
+    }, err => console.warn('global exercises snapshot error', err));
+  trackUnsub(unsubGlobal);
+
+  // Optional: personal exercises under the signed-in user
+  if (INCLUDE_PERSONAL_EXERCISES && uid) {
+    const unsubPersonal = db.collection('users').doc(uid)
+      .collection('exercises')
+      .orderBy('nameLower')
+      .onSnapshot(snap => {
+        personalDocs = snap.docs;
+        mergeAndPublish(globalDocs, personalDocs);
+      }, err => console.warn('personal exercises snapshot error', err));
+    trackUnsub(unsubPersonal);
+  }
+}
+
+async function main() {
+  await initFirebase(); // should set window.db = firebase.firestore(), window.auth = firebase.auth()
+
+  if (!auth) {
+    console.error("Firebase auth not initialized");
+    return;
+  }
+
+  auth.onAuthStateChanged(async (user) => {
+    // Clean up old listeners on any auth change
+    clearUnsubs();
+
+    state.user = user;
+
+    if (!user) {
+      state.profile = {};
+      render();
+      return go('/login');
+    }
+
+    // Ensure a /users/{uid} doc exists
+    const uref = db.collection('users').doc(user.uid);
+    const snap = await uref.get();
+    if (!snap.exists) {
+      await uref.set({
+        username: (user.email || '').split('@')[0],
+        goal: '',
+        trainerCode: 'BARN',
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // ❗ If you still want per-user libraries for athletes, you can keep this.
+      // But for a *global* coach-managed library, you likely want this OFF.
+      // await ensureExercises(); // (legacy) seeds *user* exercise library
+    }
+
+    // Live profile listener
+    const unsubProfile = uref.onSnapshot(pdoc => {
+      state.profile = pdoc.data() || {};
+      render(); // updates drawer header, settings, etc.
+    }, err => console.warn('profile snapshot error', err));
+    trackUnsub(unsubProfile);
+
+    // Live logs (private to the user)
+    const unsubLogs = db.collection('logs').doc(user.uid).collection('entries')
+      .orderBy('date', 'desc').limit(300)
+      .onSnapshot(s => { state.logs = s.docs.map(d => d.data()); },
+                  err => console.warn('logs snapshot error', err));
+    trackUnsub(unsubLogs);
+
+    // NEW: subscribe to global (+ optional personal) exercises
+    subscribeExercises(user.uid);
+
+    // Assignments → hydrate program into sessionsMap
+    const unsubAssign = db.collection('assignments').doc(user.uid)
+      .onSnapshot(async (asnap) => {
+        if (!asnap.exists) {
           state.sessionsMap = {};
           state.program = [];
           render();
           return;
         }
 
-        const a = snap.data(); // {trainerCode, weekNumber, startDate}
-        if(!a?.trainerCode || !a?.weekNumber){
+        const a = asnap.data(); // {trainerCode, weekNumber, startDate}
+        if (!a?.trainerCode || !a?.weekNumber) {
           state.sessionsMap = {};
           state.program = [];
           render();
           return;
         }
 
-        try{
+        try {
           const weekDoc = await db
             .collection('programs').doc(a.trainerCode)
             .collection('weeks').doc(String(a.weekNumber)).get();
 
           const sessions = weekDoc.exists ? (weekDoc.data().sessions || []) : [];
 
-          // If startDate is missing and sessions have no explicit dates,
-          // we can default to today so users still see a plan.
-          const anchor = a.startDate || new Date().toISOString().slice(0,10);
-
+          // If startDate missing, anchor to today to keep UX alive
+          const anchor = a.startDate || new Date().toISOString().slice(0, 10);
           const map = planSessionsToDates(sessions, anchor);
 
           state.program = sessions;
           state.sessionsMap = map;
 
-          // Optional but recommended: persist planned days so they are visible under sessions/{uid}/days/*
+          // Persist planned days under /sessions/{uid}/days for Calendar/Today views
           await writePlannedDaysToFirestore(user.uid, map);
 
           render();
-        } catch(err){
+        } catch (err) {
           console.warn('assignment -> program hydrate error', err);
         }
-      });
+      }, err => console.warn('assignments snapshot error', err));
+    trackUnsub(unsubAssign);
 
-      // NOTE: removed attachProgramSync(user.uid); (not defined)
-
-      go('/dashboard');
-    });
-  }else{
-    const demoUser = ls.get('bs_demo_user') || { uid:'local', email:'demo@barnstrong.fit' };
-    state.user = demoUser;
-    ensureLocalExercises();
+    // Land user
     go('/dashboard');
-  }
+  });
+
   render();
   setTimeout(setNetBanner, 500);
 }
 
-
-function render(){
-  const path = location.hash.replace('#','') || '/login';
+function render() {
+  const path = location.hash.replace('#', '') || '/login';
   const authed = !!state.user;
+
   qs('#drawerName').textContent = state.profile?.username || (state.user?.email || 'Guest');
   qs('#drawerGoal').textContent = 'Goal: ' + (state.profile?.goal || '—');
-  if(!authed && path !== '/login') return go('/login');
+
+  if (!authed && path !== '/login') return go('/login');
+
   (routes[path] || routes['/404'])();
 }
 
-document.addEventListener('click', (e)=>{
-  if(e.target && e.target.id==='logoutBtn'){
-    if(auth){ auth.signOut(); }
-    else { state.user=null; ls.rm('bs_demo_user'); }
-    openDrawer(false); go('/login');
+// Logout handling
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'logoutBtn') {
+    if (auth) { auth.signOut(); }
+    else { state.user = null; ls.rm('bs_demo_user'); }
+    clearUnsubs();
+    openDrawer(false);
+    go('/login');
   }
 });
+
 
 main();
 qs('#splash')?.remove();

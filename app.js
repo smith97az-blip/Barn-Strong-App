@@ -1186,7 +1186,7 @@ function TemplateBuilder(){
       <table class="sheet" id="tplTable">
         <thead>
           <tr>
-            <th>Week</th>
+            <th style="white-space:nowrap;">Week</th>
             ${DAYS.map(d=>`<th>${d}<div class="muted tiny">Movement / Sets×Reps / Load / Notes</div></th>`).join('')}
           </tr>
         </thead>
@@ -1194,9 +1194,10 @@ function TemplateBuilder(){
       </table>
     </div>
 
-    <div class="row mt">
+    <div class="row mt" style="gap:.5rem;">
       <button id="addWeek" class="btn small">+ Add Week</button>
-      <button id="saveTemplate" class="btn">Save Template</button>
+      <button id="removeWeek" class="btn small danger">− Remove Last Week</button>
+      <button id="saveTemplate" class="btn" style="margin-left:auto;">Save Template</button>
     </div>
 
     <div id="tplMsg" class="muted small mt"></div>
@@ -1205,7 +1206,7 @@ function TemplateBuilder(){
   // Populate the shared datalist from the Exercise Library
   (async ()=>{
     try{
-      const names = await getExerciseNames(); // uses your existing helper
+      const names = await getExerciseNames();
       const dl = root.querySelector('#exOptions');
       dl.innerHTML = (names || [])
         .slice()
@@ -1214,86 +1215,19 @@ function TemplateBuilder(){
     }catch(e){ console.warn('exOptions load', e); }
   })();
 
-  // Render N weeks of rows
   const body = root.querySelector('#tplBody');
-  function renderWeeks(n){
-    body.innerHTML = '';
-    for(let w=1; w<=n; w++){
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td class="bold">Week ${w}</td>` + DAYS.map(()=>`
-        <td class="cell" data-week="${w}">
-          <!-- Movement: type-ahead from datalist -->
-          <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement"/>
+  const weeksInput = root.querySelector('#tplWeeks');
 
-          <!-- The rest can remain contenteditable for quick free text -->
-          <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
-          <div class="slot" contenteditable="true" data-field="load" placeholder="Load"></div>
-          <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
-        </td>
-      `).join('');
-      body.appendChild(tr);
-    }
-  }
-  renderWeeks(DEFAULT_WEEKS);
-
-  // Add another week
-  root.querySelector('#addWeek').addEventListener('click', ()=>{
-    const n = body.querySelectorAll('tr').length + 1;
+  function createWeekRow(weekNumber){
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="bold">Week ${n}</td>` + DAYS.map(()=>`
-      <td class="cell" data-week="${n}">
+    tr.innerHTML = `<td class="bold" style="white-space:nowrap;">Week ${weekNumber}</td>` + DAYS.map(()=>`
+      <td class="cell" data-week="${weekNumber}">
+        <!-- Movement: type-ahead from datalist -->
         <input class="slot input" data-field="movement" list="exOptions" placeholder="Movement"/>
+        <!-- The rest remain contenteditable for quick free text -->
         <div class="slot" contenteditable="true" data-field="setsreps" placeholder="Sets×Reps"></div>
         <div class="slot" contenteditable="true" data-field="load" placeholder="Load"></div>
         <div class="slot" contenteditable="true" data-field="notes" placeholder="Notes"></div>
-      </td>
-    `).join('');
-    body.appendChild(tr);
-  });
-
-  // Save template (coach-only write)
-  root.querySelector('#saveTemplate').addEventListener('click', async ()=>{
-    const name = root.querySelector('#tplName').value.trim() || 'Untitled';
-    const weeks = parseInt(root.querySelector('#tplWeeks').value||'4',10);
-    if(!db || !state.user) return alert('Login + Firebase required.');
-    const trainerCode = 'BARN'; // adjust if you add a trainer code selector
-    const grid = [];  // serialize cells → array of {week, day, movement, setsreps, load, notes}
-
-    body.querySelectorAll('tr').forEach((tr, idx)=>{
-      const week = idx+1;
-      const cells = [...tr.querySelectorAll('td.cell')];
-      cells.forEach((td, cIdx)=>{
-        const rec = {
-          week,
-          day: DAYS[cIdx],
-          // Movement is an <input>, use .value
-          movement: td.querySelector('[data-field="movement"]')?.value?.trim() || '',
-          // The rest are contenteditable, use .innerText
-          setsreps: td.querySelector('[data-field="setsreps"]')?.innerText.trim() || '',
-          load:     td.querySelector('[data-field="load"]')?.innerText.trim() || '',
-          notes:    td.querySelector('[data-field="notes"]')?.innerText.trim() || ''
-        };
-        // skip completely empty cells
-        if(rec.movement || rec.setsreps || rec.load || rec.notes) grid.push(rec);
-      });
-    });
-
-    try{
-      const ref = db.collection('templates').doc(trainerCode).collection('defs').doc();
-      await ref.set({
-        name, weeksPerMesocycle: weeks, mesocycles: 1,
-        grid,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        createdBy: state.user.uid
-      });
-      root.querySelector('#tplMsg').textContent = `Saved "${name}" (${grid.length} items).`;
-      alert('Template saved.');
-      go('/templates');
-    }catch(e){ alert(e.message); }
-  });
-
-  page('Template Builder', root);
-}
 
 // ---- Saved Templates ----
 function SavedTemplates(){

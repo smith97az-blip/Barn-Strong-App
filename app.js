@@ -306,17 +306,26 @@ function buildSessionsMapFromWeeks(weeks, startDateISO){
 }
 
     // Load all weeks for the trainer code (coach publishes here)
-    const weeksSnap = await db.collection('programs').doc(trainerCode).collection('weeks').get();
-    const weeks = weeksSnap.docs.map(d => {
-      const data = d.data() || {};
-      const wn = data.weekNumber != null ? data.weekNumber : Number(d.id) || null;
-      return { weekNumber: wn, ...data };
-    });
+const weeksSnap = await db.collection('programs')
+  .doc(trainerCode)
+  .collection('weeks')
+  .get();
 
-    state.program = weeks;
-    state.sessionsMap = buildSessionsMapFromWeeks(weeks, startDate);
-    rerenderIfProgramPages();
-  });
+const weeks = weeksSnap.docs.map(function (d) {
+  var data = d.data() || {};
+  var wn = (data.weekNumber !== undefined && data.weekNumber !== null)
+    ? data.weekNumber
+    : (parseInt(d.id, 10) || null);
+
+  // Create a plain object without object spread (older parsers safe)
+  var out = {};
+  for (var k in data) {
+    if (Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
+  }
+  out.weekNumber = wn;
+  return out;
+});
+
 
   state.unsub.push(unsubAssign);
 }

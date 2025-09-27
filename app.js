@@ -1,5 +1,5 @@
-console.log('Barn Strong build v3.1.2 @ ' + new Date().toISOString());
-window.__BUILD_ID__ = 'v2.6.7';
+console.log('Barn Strong build v3.1.6 @ ' + new Date().toISOString());
+window.__BUILD_ID__ = 'v3.1.6';
 // ========================================
 
 

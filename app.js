@@ -1284,7 +1284,7 @@ function CoachPortal(){
     sessions.push(...copies); render();
   });
 
- // === NEW: Schedule directly to users as "Scheduled Sessions" (sanitized) ===
+ // === NEW: Schedule directly to users as "Scheduled Sessions" (sanitized + clearer errors) ===
 root.querySelector('#scheduleSessions').addEventListener('click', async ()=>{
   const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
   const targetUsers = getSelectedUserIds();
@@ -1308,16 +1308,15 @@ root.querySelector('#scheduleSessions').addEventListener('click', async ()=>{
       const base = db.collection('sessions').doc(uid).collection('days');
 
       for (const s of sessions) {
-        const docId = String(s.date).trim();     // already validated
+        const docId = String(s.date).trim();
         const payload = {
           title: (s.title || 'Session'),
           blocks: (Array.isArray(s.blocks) ? s.blocks : []).map(b => ({
             name: (b?.name || '').trim(),
-            // ensure numbers or null (not undefined)
             sets: (Number.isFinite(b?.sets) ? Number(b.sets) : (b?.sets ? parseInt(b.sets, 10) : null)) ?? null,
             reps: (Number.isFinite(b?.reps) ? Number(b.reps) : (b?.reps ? parseInt(b.reps, 10) : null)) ?? null,
             weight: (Number.isFinite(b?.weight) ? Number(b.weight) : (b?.weight ? parseFloat(b.weight) : null)) ?? null,
-            notes: (b?.notes ?? '') // ok if empty string
+            notes: (b?.notes ?? '')
           })),
           status: 'planned',
           plannedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -1326,24 +1325,25 @@ root.querySelector('#scheduleSessions').addEventListener('click', async ()=>{
         };
 
         const clean = sanitizeForFirestore(payload);
-        try {
-          await base.doc(docId).set(clean, { merge: true });
-          writes++;
-        } catch (e) {
-          console.error('Schedule write failed', { uid, docId, clean, original: payload }, e);
-          throw e; // bubble to outer catch so you see the first offending doc
-        }
+        await base.doc(docId).set(clean, { merge: true });
+        writes++;
       }
     }
 
     showToast(`Scheduled ${sessions.length} session(s) to ${targetUsers.length} user(s).`);
     root.querySelector('#out').textContent =
       `Scheduled ${sessions.length} session(s) • ${targetUsers.length} user(s) • ${writes} writes`;
-  }catch(e){
-    // Show a meaningful message; console already has the detailed object.
-    alert((e && e.message) ? e.message : 'Failed to schedule sessions (see console for details).');
+
+  } catch (e) {
+    console.error('Schedule to Users failed', e);
+    const msg =
+      e?.code === 'permission-denied'
+        ? 'Permission denied. Update rules to allow coach writes to /sessions/{userId}/days/*.'
+        : e?.message || 'Failed to schedule sessions (see console).';
+    alert(msg);
   }
 });
+
 
 
   // === NEW: Publish as Program (previous "Publish Week" behavior) ===

@@ -1109,7 +1109,7 @@ function ExerciseLibrary(){
 }
 
 
-// ---- Coach Portal ----
+// ---- Coach Portal (schedule sessions OR publish as program) ----
 function CoachPortal(){
   const root = document.createElement('div');
   root.innerHTML = `
@@ -1132,40 +1132,44 @@ function CoachPortal(){
 
     <div class="divider"></div>
     <div id="sessions"></div>
-    <div class="row mt">
+    <div class="row mt" style="gap:.5rem; flex-wrap:wrap;">
       <button class="btn" id="addSession">+ Add Session</button>
       <button class="btn ghost" id="dupWeek">Duplicate Week</button>
+
+      <span class="divider" style="flex-basis:100%; height:0;"></span>
+
+      <button class="btn" id="scheduleSessions">Schedule to Users</button>
+      <button class="btn ghost" id="addAsProgram">Add as Program</button>
+
+      <span class="divider" style="flex-basis:100%; height:0;"></span>
+
       <button class="btn ghost" id="openTemplateBuilder">New Template</button>
       <button class="btn ghost" id="openSavedTemplates">Saved Templates</button>
       <button class="btn ghost" id="athleteViewBtn">Athlete View</button>
       <button class="btn ghost" id="exerciseLibBtn">Exercise Library</button>
     </div>
 
-    <div class="divider"></div>
-    <button id="publish" class="btn">Publish Week</button>
     <div id="out" class="mt muted small"></div>
   `;
+  page('Coach Portal', root);
 
   function getSelectedUserIds(){
-  const sel = root.querySelector('#assignUsers');
-  return Array.from(sel.selectedOptions || [])
-    .map(o => o.value)
-    .filter(Boolean);
-}
+    const sel = root.querySelector('#assignUsers');
+    return Array.from(sel.selectedOptions || []).map(o => o.value).filter(Boolean);
+  }
 
   root.querySelector('#openSavedTemplates')?.addEventListener('click', ()=> go('/templates'));
   root.querySelector('#openTemplateBuilder')?.addEventListener('click', ()=> go('/template-builder'));
   root.querySelector('#athleteViewBtn')?.addEventListener('click', ()=> go('/athletes'));
-  root.querySelector('#exerciseLibBtn').addEventListener('click', () => go('/exercises'));
+  root.querySelector('#exerciseLibBtn')?.addEventListener('click', () => go('/exercises'));
 
-  
   // flatpickr on Start Date
   setTimeout(()=> { if(window.flatpickr){ flatpickr(root.querySelector('#startDate'), { dateFormat:'Y-m-d' }); }}, 0);
 
   const sessions = [];
   const sessionsWrap = root.querySelector('#sessions');
 
-  function renderSessionCard(idx){
+  function makeSessionCard(idx){
     const s = sessions[idx];
     const card = document.createElement('div');
     card.className = 'item';
@@ -1214,19 +1218,19 @@ function CoachPortal(){
       exlist.appendChild(row);
     });
 
- card.querySelector('.addEx').addEventListener('click', ()=>{
-  const nameEl = card.querySelector('.exname');
-  const name = (nameEl?.value || '').trim();
-  if(!name) return alert('Select an exercise');
+    card.querySelector('.addEx').addEventListener('click', ()=>{
+      const nameEl = card.querySelector('.exname');
+      const name = (nameEl?.value || '').trim();
+      if(!name) return alert('Select an exercise');
 
-  const sets = parseInt(card.querySelector('.exsets').value||'') || 1;
-  const reps = parseInt(card.querySelector('.exreps').value||'') || null;
-  const weight = parseFloat(card.querySelector('.exload').value||'') || null;
+      const sets = parseInt(card.querySelector('.exsets').value||'') || 1;
+      const reps = parseInt(card.querySelector('.exreps').value||'') || null;
+      const weight = parseFloat(card.querySelector('.exload').value||'') || null;
 
-  if(!sessions[idx].blocks) sessions[idx].blocks = [];
-  sessions[idx].blocks.push({ name, sets, reps, weight });
-  render();
-});
+      if(!sessions[idx].blocks) sessions[idx].blocks = [];
+      sessions[idx].blocks.push({ name, sets, reps, weight });
+      render();
+    });
 
     card.querySelector('.dup').addEventListener('click', ()=>{
       const clone = JSON.parse(JSON.stringify(sessions[idx]));
@@ -1242,9 +1246,10 @@ function CoachPortal(){
 
   function render(){
     sessionsWrap.innerHTML = '';
-    sessions.forEach((_, i)=> sessionsWrap.appendChild(renderSessionCard(i)));
+    sessions.forEach((_, i)=> sessionsWrap.appendChild(makeSessionCard(i)));
   }
 
+  // Add/duplicate week buttons
   root.querySelector('#addSession').addEventListener('click', ()=>{
     sessions.push({ date:'', title:'', blocks:[] }); render();
   });
@@ -1253,42 +1258,90 @@ function CoachPortal(){
     sessions.push(...copies); render();
   });
 
- root.querySelector('#publish').addEventListener('click', async()=>{
-  const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
-  const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
-  const startDate = root.querySelector('#startDate').value || new Date().toISOString().slice(0,10);
-  const targetUsers = getSelectedUserIds(); // <-- array
+  // === NEW: Schedule directly to users as "Scheduled Sessions" ===
+  root.querySelector('#scheduleSessions').addEventListener('click', async ()=>{
+    const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
+    const targetUsers = getSelectedUserIds();
+    if(!db || !state.user) return alert('Login + Firebase required');
+    if(!sessions.length) return alert('Add at least one session card.');
+    if(!targetUsers.length) return alert('Select at least one user.');
+    // Require dates for each session (we're writing day docs)
+    const missingDates = sessions.filter(s => !s.date);
+    if (missingDates.length) return alert('Please set a Session Date for each card before scheduling.');
 
-  if(!sessions.length) return alert('Add at least one session.');
-  if(!db || !state.user) return alert('Login + Firebase required');
+    try{
+      const chunk = 400;
+      let writes = 0;
 
-  try{
-    // Publish/update the week once
-    await db.collection('programs').doc(trainerCode)
-      .collection('weeks').doc(String(weekNumber))
-      .set({ weekNumber, sessions }, { merge: true });
+      for (let i=0; i<targetUsers.length; i++){
+        const uid = targetUsers[i];
+        const base = db.collection('sessions').doc(uid).collection('days');
 
-    // Assign to all selected users (batched)
-    if(targetUsers.length){
-      const batch = db.batch();
-      targetUsers.forEach(uid=>{
-        const ref = db.collection('assignments').doc(uid);
-        batch.set(ref, {
-          trainerCode, weekNumber, startDate,
-          assignedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-      });
-      await batch.commit();
+        // batch per user (or chunk if >400)
+        for (let j=0; j<sessions.length; j+=chunk){
+          const batch = db.batch();
+          sessions.slice(j, j+chunk).forEach(s => {
+            const ref = base.doc(s.date);
+            batch.set(ref, {
+              title: s.title || 'Session',
+              blocks: s.blocks || [],
+              status: 'planned',
+              plannedAt: firebase.firestore.FieldValue.serverTimestamp(),
+              trainerCode,
+              source: 'coach_portal'
+            }, { merge: true });
+            writes++;
+          });
+          await batch.commit();
+        }
+      }
+
+      showToast(`Scheduled ${sessions.length} session(s) to ${targetUsers.length} user(s).`);
+      root.querySelector('#out').textContent =
+        `Scheduled ${sessions.length} session(s) • ${targetUsers.length} user(s) • ${writes} writes`;
+    }catch(e){
+      alert(e.message || 'Failed to schedule sessions');
     }
+  });
 
-    alert(`Published week ${weekNumber} (${sessions.length} sessions)` +
-          (targetUsers.length ? ` and assigned to ${targetUsers.length} user(s).` : '.'));
-    root.querySelector('#out').textContent =
-      `Published week ${weekNumber} • ${sessions.length} sessions` +
-      (targetUsers.length ? ` • Assigned to ${targetUsers.length}` : '');
-  }catch(e){ alert(e.message); }
-});
+  // === NEW: Publish as Program (previous "Publish Week" behavior) ===
+  root.querySelector('#addAsProgram').addEventListener('click', async()=>{
+    const weekNumber = parseInt(root.querySelector('#wk').value||'1',10);
+    const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
+    const startDate = root.querySelector('#startDate').value || new Date().toISOString().slice(0,10);
+    const targetUsers = getSelectedUserIds();
 
+    if(!sessions.length) return alert('Add at least one session card.');
+    if(!db || !state.user) return alert('Login + Firebase required');
+
+    try{
+      // Write/merge program week
+      await db.collection('programs').doc(trainerCode)
+        .collection('weeks').doc(String(weekNumber))
+        .set({ weekNumber, sessions }, { merge: true });
+
+      // Optional: link assignment for selected users
+      if(targetUsers.length){
+        const batch = db.batch();
+        targetUsers.forEach(uid=>{
+          const ref = db.collection('assignments').doc(uid);
+          batch.set(ref, {
+            trainerCode, weekNumber, startDate,
+            assignedAt: firebase.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+        });
+        await batch.commit();
+      }
+
+      alert(`Added as Program (Week ${weekNumber}) • ${sessions.length} sessions` +
+            (targetUsers.length ? ` • Assigned to ${targetUsers.length} user(s)` : ''));
+      root.querySelector('#out').textContent =
+        `Program updated • Week ${weekNumber} • ${sessions.length} sessions` +
+        (targetUsers.length ? ` • Assigned to ${targetUsers.length}` : '');
+    }catch(e){ alert(e.message); }
+  });
+
+  // Lookups
   async function populateLookups(){
     const codeSel = root.querySelector('#trainerCode');
     const userSel = root.querySelector('#assignUsers');
@@ -1320,7 +1373,6 @@ function CoachPortal(){
   }
 
   populateLookups();
-  page('Coach Portal', root);
 }
 
 // ---- Template Builder (with Day-of-Week) ----

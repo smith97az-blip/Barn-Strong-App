@@ -13,33 +13,6 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
-// Live-hydrate sessionsMap from /sessions/{uid}/days
-function subscribeUserDays(uid){
-  if (!db || !uid) return;
-  const ref = db.collection('sessions').doc(uid).collection('days');
-
-  const unsub = ref.onSnapshot((snap)=>{
-    const map = {};
-    snap.forEach(doc => {
-      const d = doc.data() || {};
-      map[doc.id] = {
-        date: doc.id,
-        title: d.title || 'Session',
-        blocks: Array.isArray(d.blocks) ? d.blocks : [],
-        status: d.status || 'planned',
-        bodyWeight: d.bodyWeight ?? null,
-        startedAtMs: d.startedAtMs ?? null,
-        completedAtMs: d.completedAtMs ?? null,
-        durationSec: d.durationSec ?? null,
-      };
-    });
-    state.sessionsMap = map;         // 👈 source of truth for Calendar/Today
-    rerenderIfProgramPages?.();       // re-render dashboard/today/calendar/program
-  }, err => console.warn('days snapshot error', err));
-
-  trackUnsub(unsub);
-}
-
 
 function nextDateForDowOnOrAfter(anchorISO, dow /*0=Sun..6=Sat*/){
   const d = new Date(anchorISO);
@@ -281,11 +254,6 @@ function openModal(contentHTML){
 }
 
 // --- Program hydration helpers ---
-function addDaysISO(iso, n){
-  const d = new Date(iso); d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0,10);
-}
-
 function defaultOffsetsForCount(n){
   // Friendly defaults for common weekly structures.
   if (n === 4) return [0,2,4,6];    // Mon/Wed/Fri/Sun
@@ -336,28 +304,6 @@ function buildSessionsMapFromWeeks(weeks, startDateISO){
   });
   return map;
 }
-
-// Attach live sync from assignments + programs → state.program + state.sessionsMap
-function attachProgramSync(uid){
-  // Clean up previous listeners if any
-  if (!state.unsub) state.unsub = [];
-  state.unsub.forEach(u => { try{ u(); }catch{} });
-  state.unsub = [];
-
-  const unsubAssign = db.collection('assignments').doc(uid).onSnapshot(async (doc)=>{
-    if (!doc.exists){
-      state.program = [];
-      state.sessionsMap = {};
-      rerenderIfProgramPages();
-      return;
-    }
-    const { trainerCode, startDate } = doc.data() || {};
-    if (!trainerCode){
-      state.program = [];
-      state.sessionsMap = {};
-      rerenderIfProgramPages();
-      return;
-    }
 
     // Load all weeks for the trainer code (coach publishes here)
     const weeksSnap = await db.collection('programs').doc(trainerCode).collection('weeks').get();
@@ -591,13 +537,6 @@ function page(title, body){
   else if(Array.isArray(body)){ body.forEach(x=>card.appendChild(x)); }
   root.appendChild(card);
 }
-
-// Returns just the route path (no query), e.g. "#/athlete?uid=123" -> "/athlete"
-function currentRoutePath(){
-  const hash = location.hash || '';
-  return (hash.split('?')[0] || '#/login').replace('#','') || '/login';
-}
-
 
 // ---- Analytics ----
 function logEvent(name, data = {}) {
@@ -1783,7 +1722,7 @@ function getQueryParam(key){
 
 // ---- Athlete Detail (Program | Scheduled Sessions | Variation Record) ----
 function AthleteDetail(){
-  if (!isCoachUser || !isCoachUser()) {
+  if (!isCoachUser()) {
     return page('Athlete Detail', `<p class="muted">Coach access required.</p>`);
   }
 
@@ -2171,7 +2110,7 @@ route('/templates', SavedTemplates);
 route('/athlete', AthleteDetail);
 
 
-// ---- Auth glue (compat SDK) ----
+// ==== Auth glue (compat SDK) ====
 
 // Coach flag for UI gating (rules still enforce writes)
 const COACH_UID = "Pxgym9zVYmYifKvF4AeXotus4wJ2";
@@ -2183,12 +2122,18 @@ function isCoachUser() {
 // Toggle this if you still want athletes to see their *personal* exercises merged in
 const INCLUDE_PERSONAL_EXERCISES = false;
 
-// Helper: safely push an unsubscribe and create state.unsub if needed
+// --- Small helpers ---
+function currentRoutePath(){
+  // Strips query like #/athlete?uid=...
+  return (location.hash.replace('#','') || '/login').split('?')[0];
+}
+
+// Safely push an unsubscribe and create state.unsub if needed
 function trackUnsub(fn) {
   (state.unsub ||= []).push(fn);
 }
 
-// Helper: clear all active listeners
+// Clear all active listeners
 function clearUnsubs() {
   if (Array.isArray(state.unsub)) {
     state.unsub.forEach(fn => { try { fn(); } catch (_) {} });
@@ -2208,7 +2153,7 @@ function subscribeExercises(uid) {
       const key = (name || "").trim().toLowerCase();
       if (!key || seen.has(key)) return;
       seen.add(key);
-      items.push(name.trim());
+      items.push((name || "").trim());
     };
 
     globalDocs.forEach(d => pushName(d.data().name || d.data().nameLower || d.id));
@@ -2216,9 +2161,11 @@ function subscribeExercises(uid) {
 
     items.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
     state.exercises = items;
-    // Only re-render Coach Portal-heavy views to avoid thrash
+
+    // Only re-render heavy views to avoid thrash
     const p = currentRoutePath();
-      if (p === '/coach' || p === '/template' || p === '/exercises') {render();
+    if (p === '/coach' || p === '/template-builder' || p === '/exercises') {
+      render();
     }
   }
 
@@ -2227,7 +2174,7 @@ function subscribeExercises(uid) {
 
   // Global exercises (coach-managed)
   const unsubGlobal = db.collection('exercises')
-    .orderBy('nameLower') // single-field index, auto-created by Firestore
+    .orderBy('nameLower')
     .onSnapshot(snap => {
       globalDocs = snap.docs;
       mergeAndPublish(globalDocs, personalDocs);
@@ -2247,9 +2194,37 @@ function subscribeExercises(uid) {
   }
 }
 
+// Live-hydrate sessionsMap from /sessions/{uid}/days (source of truth for Today/Calendar)
+function subscribeUserDays(uid){
+  if (!db || !uid) return;
+  const ref = db.collection('sessions').doc(uid).collection('days');
+
+  const unsub = ref.onSnapshot((snap)=>{
+    const map = {};
+    snap.forEach(doc => {
+      const d = doc.data() || {};
+      map[doc.id] = {
+        date: doc.id,
+        title: d.title || 'Session',
+        blocks: Array.isArray(d.blocks) ? d.blocks : [],
+        status: d.status || 'planned',
+        bodyWeight: d.bodyWeight ?? null,
+        startedAtMs: d.startedAtMs ?? null,
+        completedAtMs: d.completedAtMs ?? null,
+        durationSec: d.durationSec ?? null,
+      };
+    });
+    state.sessionsMap = map;
+    // Lightweight re-render for pages that show sessions/programs
+    if (typeof rerenderIfProgramPages === 'function') rerenderIfProgramPages();
+    else render();
+  }, err => console.warn('days snapshot error', err));
+
+  trackUnsub(unsub);
+}
+
 async function main() {
   await initFirebase(); // should set window.db = firebase.firestore(), window.auth = firebase.auth()
-
   if (!auth) {
     console.error("Firebase auth not initialized");
     return;
@@ -2259,13 +2234,18 @@ async function main() {
     // Clean up old listeners on any auth change
     clearUnsubs();
 
+    // Keep state in sync
     state.user = user;
 
+    // If signed out, bail early
     if (!user) {
       state.profile = {};
       render();
       return go('/login');
     }
+
+    // ✅ Start live days subscription (sessions source-of-truth)
+    subscribeUserDays(user.uid);
 
     // Ensure a /users/{uid} doc exists
     const uref = db.collection('users').doc(user.uid);
@@ -2277,10 +2257,8 @@ async function main() {
         trainerCode: 'BARN',
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
-
-      // ❗ If you still want per-user libraries for athletes, you can keep this.
-      // But for a *global* coach-managed library, you likely want this OFF.
-      // await ensureExercises(); // (legacy) seeds *user* exercise library
+      // For global coach-managed library, keep the legacy per-user seeding OFF.
+      // await ensureExercises();
     }
 
     // Live profile listener
@@ -2297,24 +2275,24 @@ async function main() {
                   err => console.warn('logs snapshot error', err));
     trackUnsub(unsubLogs);
 
-    // NEW: subscribe to global (+ optional personal) exercises
+    // Global (+ optional personal) exercises
     subscribeExercises(user.uid);
 
-    // Assignments → hydrate program into sessionsMap
+    // Assignments → hydrate program weeks into day docs (do NOT overwrite sessionsMap)
     const unsubAssign = db.collection('assignments').doc(user.uid)
       .onSnapshot(async (asnap) => {
         if (!asnap.exists) {
-          state.sessionsMap = {};
           state.program = [];
-          render();
+          if (typeof rerenderIfProgramPages === 'function') rerenderIfProgramPages();
+          else render();
           return;
         }
 
-        const a = asnap.data(); // {trainerCode, weekNumber, startDate}
-        if (!a?.trainerCode || !a?.weekNumber) {
-          state.sessionsMap = {};
+        const a = asnap.data() || {};
+        if (!a.trainerCode || !a.weekNumber) {
           state.program = [];
-          render();
+          if (typeof rerenderIfProgramPages === 'function') rerenderIfProgramPages();
+          else render();
           return;
         }
 
@@ -2324,20 +2302,17 @@ async function main() {
             .collection('weeks').doc(String(a.weekNumber)).get();
 
           const sessions = weekDoc.exists ? (weekDoc.data().sessions || []) : [];
-
-          // If startDate missing, anchor to today to keep UX alive
-          const anchor = a.startDate || new Date().toISOString().slice(0, 10);
-          const map = planSessionsToDates(sessions, anchor);
-
           state.program = sessions;
-          state.sessionsMap = map;
 
-          // Persist planned days under /sessions/{uid}/days for Calendar/Today views
+          // Materialize planned days so subscribeUserDays() will pick them up
+          const anchor = a.startDate || new Date().toISOString().slice(0,10);
+          const map = planSessionsToDates(sessions, anchor);
           await writePlannedDaysToFirestore(user.uid, map);
 
-          render();
+          if (typeof rerenderIfProgramPages === 'function') rerenderIfProgramPages();
+          else render();
         } catch (err) {
-          console.warn('assignment -> program hydrate error', err);
+          console.warn('assignment → days hydrate error', err);
         }
       }, err => console.warn('assignments snapshot error', err));
     trackUnsub(unsubAssign);
@@ -2351,7 +2326,7 @@ async function main() {
 }
 
 function render() {
-  const path = currentRoutePath();          // <-- strip ?uid=...
+  const path = currentRoutePath();
   const authed = !!state.user;
 
   qs('#drawerName').textContent = state.profile?.username || (state.user?.email || 'Guest');
@@ -2361,7 +2336,6 @@ function render() {
 
   (routes[path] || routes['/404'])();
 }
-
 
 // Logout handling
 document.addEventListener('click', (e) => {
@@ -2373,6 +2347,7 @@ document.addEventListener('click', (e) => {
     go('/login');
   }
 });
+
 // ---- Service Worker (GitHub Pages scope-safe) ----
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
@@ -2384,4 +2359,5 @@ if ('serviceWorker' in navigator) {
 
 main();
 qs('#splash')?.remove();
+
 

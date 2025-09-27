@@ -1284,51 +1284,67 @@ function CoachPortal(){
     sessions.push(...copies); render();
   });
 
-  // === NEW: Schedule directly to users as "Scheduled Sessions" ===
-  root.querySelector('#scheduleSessions').addEventListener('click', async ()=>{
-    const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
-    const targetUsers = getSelectedUserIds();
-    if(!db || !state.user) return alert('Login + Firebase required');
-    if(!sessions.length) return alert('Add at least one session card.');
-    if(!targetUsers.length) return alert('Select at least one user.');
-    // Require dates for each session (we're writing day docs)
-    const missingDates = sessions.filter(s => !s.date);
-    if (missingDates.length) return alert('Please set a Session Date for each card before scheduling.');
+ // === NEW: Schedule directly to users as "Scheduled Sessions" (sanitized) ===
+root.querySelector('#scheduleSessions').addEventListener('click', async ()=>{
+  const trainerCode = root.querySelector('#trainerCode').value || 'BARN';
+  const targetUsers = getSelectedUserIds();
+  if(!db || !state.user) return alert('Login + Firebase required');
+  if(!sessions.length) return alert('Add at least one session card.');
+  if(!targetUsers.length) return alert('Select at least one user.');
 
-    try{
-      const chunk = 400;
-      let writes = 0;
+  // Validate dates
+  const badDates = sessions
+    .map((s, i) => ({ i, date: String(s.date||'').trim() }))
+    .filter(x => !isIsoDateId(x.date));
+  if (badDates.length) {
+    const ex = badDates.slice(0,3).map(x => `#${x.i+1} "${x.date}"`).join(', ');
+    return alert(`Please set a valid Session Date (YYYY-MM-DD) for each card. Bad: ${ex}${badDates.length>3?'…':''}`);
+  }
 
-      for (let i=0; i<targetUsers.length; i++){
-        const uid = targetUsers[i];
-        const base = db.collection('sessions').doc(uid).collection('days');
+  try{
+    let writes = 0;
 
-        // batch per user (or chunk if >400)
-        for (let j=0; j<sessions.length; j+=chunk){
-          const batch = db.batch();
-          sessions.slice(j, j+chunk).forEach(s => {
-            const ref = base.doc(s.date);
-            batch.set(ref, {
-              title: s.title || 'Session',
-              blocks: s.blocks || [],
-              status: 'planned',
-              plannedAt: firebase.firestore.FieldValue.serverTimestamp(),
-              trainerCode,
-              source: 'coach_portal'
-            }, { merge: true });
-            writes++;
-          });
-          await batch.commit();
+    for (const uid of targetUsers) {
+      const base = db.collection('sessions').doc(uid).collection('days');
+
+      for (const s of sessions) {
+        const docId = String(s.date).trim();     // already validated
+        const payload = {
+          title: (s.title || 'Session'),
+          blocks: (Array.isArray(s.blocks) ? s.blocks : []).map(b => ({
+            name: (b?.name || '').trim(),
+            // ensure numbers or null (not undefined)
+            sets: (Number.isFinite(b?.sets) ? Number(b.sets) : (b?.sets ? parseInt(b.sets, 10) : null)) ?? null,
+            reps: (Number.isFinite(b?.reps) ? Number(b.reps) : (b?.reps ? parseInt(b.reps, 10) : null)) ?? null,
+            weight: (Number.isFinite(b?.weight) ? Number(b.weight) : (b?.weight ? parseFloat(b.weight) : null)) ?? null,
+            notes: (b?.notes ?? '') // ok if empty string
+          })),
+          status: 'planned',
+          plannedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          trainerCode,
+          source: 'coach_portal'
+        };
+
+        const clean = sanitizeForFirestore(payload);
+        try {
+          await base.doc(docId).set(clean, { merge: true });
+          writes++;
+        } catch (e) {
+          console.error('Schedule write failed', { uid, docId, clean, original: payload }, e);
+          throw e; // bubble to outer catch so you see the first offending doc
         }
       }
-
-      showToast(`Scheduled ${sessions.length} session(s) to ${targetUsers.length} user(s).`);
-      root.querySelector('#out').textContent =
-        `Scheduled ${sessions.length} session(s) • ${targetUsers.length} user(s) • ${writes} writes`;
-    }catch(e){
-      alert(e.message || 'Failed to schedule sessions');
     }
-  });
+
+    showToast(`Scheduled ${sessions.length} session(s) to ${targetUsers.length} user(s).`);
+    root.querySelector('#out').textContent =
+      `Scheduled ${sessions.length} session(s) • ${targetUsers.length} user(s) • ${writes} writes`;
+  }catch(e){
+    // Show a meaningful message; console already has the detailed object.
+    alert((e && e.message) ? e.message : 'Failed to schedule sessions (see console for details).');
+  }
+});
+
 
   // === NEW: Publish as Program (previous "Publish Week" behavior) ===
   root.querySelector('#addAsProgram').addEventListener('click', async()=>{

@@ -21,6 +21,32 @@ function nextDateForDowOnOrAfter(anchorISO, dow /*0=Sun..6=Sat*/){
   return d.toISOString().slice(0,10);
 }
 
+// Remove undefined / NaN / Infinity recursively (Firestore-safe)
+function sanitizeForFirestore(value){
+  if (value === undefined || Number.isNaN(value) || value === Infinity || value === -Infinity) return null;
+
+  if (Array.isArray(value)) {
+    return value.map(v => sanitizeForFirestore(v));
+  }
+
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      const sv = sanitizeForFirestore(v);
+      // Firestore allows null, but if you prefer, you can skip nulls:
+      // if (sv === null) continue;
+      out[k] = sv;
+    }
+    return out;
+  }
+
+  return value;
+}
+
+// strict YYYY-MM-DD
+function isIsoDateId(s){ return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.trim()); }
+
+
 // --- Global Exercise Library helpers (compat SDK) ---
 
 async function upsertGlobalExercise(id, data) {

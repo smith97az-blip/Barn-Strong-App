@@ -13,6 +13,34 @@ const ls = {
 };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
 
+// Live-hydrate sessionsMap from /sessions/{uid}/days
+function subscribeUserDays(uid){
+  if (!db || !uid) return;
+  const ref = db.collection('sessions').doc(uid).collection('days');
+
+  const unsub = ref.onSnapshot((snap)=>{
+    const map = {};
+    snap.forEach(doc => {
+      const d = doc.data() || {};
+      map[doc.id] = {
+        date: doc.id,
+        title: d.title || 'Session',
+        blocks: Array.isArray(d.blocks) ? d.blocks : [],
+        status: d.status || 'planned',
+        bodyWeight: d.bodyWeight ?? null,
+        startedAtMs: d.startedAtMs ?? null,
+        completedAtMs: d.completedAtMs ?? null,
+        durationSec: d.durationSec ?? null,
+      };
+    });
+    state.sessionsMap = map;         // 👈 source of truth for Calendar/Today
+    rerenderIfProgramPages?.();       // re-render dashboard/today/calendar/program
+  }, err => console.warn('days snapshot error', err));
+
+  trackUnsub(unsub);
+}
+
+
 function nextDateForDowOnOrAfter(anchorISO, dow /*0=Sun..6=Sat*/){
   const d = new Date(anchorISO);
   const cur = d.getDay();
